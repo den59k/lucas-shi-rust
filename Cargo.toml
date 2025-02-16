@@ -1,0 +1,16 @@
+[package]
+name = "optical-flow-lk"
+version = "0.1.0"
+edition = "2021"
+authors = ["den59k <den59k@gmail.com>"]
+description = "Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi feature detection"
+license = "MIT"
+repository = "https://github.com/den59k/lucas-shi-rust"
+documentation = "https://docs.rs/optical-flow-lk"
+keywords = ["optical-flow", "tracking", "computer-vision", "feature-detection", "visual-odometry"]
+categories = ["computer-vision", "algorithms", "science"]
+
+[dependencies]
+image = "0.25.5"
+imageproc = "0.25.0"
+nalgebra = "0.33.2"
