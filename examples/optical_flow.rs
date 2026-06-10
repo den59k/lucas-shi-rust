@@ -22,6 +22,7 @@ fn main() {
         &prev_frame_pyr,
         &next_frame_pyr,
         &prev_points,
+        None,
         21,
         30,
         DEFAULT_MIN_EIGEN_THRESHOLD,

@@ -78,6 +78,7 @@ pub fn calc_optical_flow(
         prev_pyramid,
         curr_pyramid,
         prev_points,
+        None,
         window_size,
         max_iterations,
         DEFAULT_MIN_EIGEN_THRESHOLD,
@@ -94,11 +95,20 @@ pub fn calc_optical_flow(
 /// * `prev_pyramid` - Previous frame (pyramid of grayscale)
 /// * `curr_pyramid` - Next frame (pyramid of grayscale)
 /// * `prev_points` - Feature points to track (in prev frame, level-0 coordinates)
+/// * `predicted` - Optional predicted positions in the next frame, one per
+///   `prev_point` (level-0 coordinates). When `Some`, the iteration is seeded
+///   with the predicted displacement at the coarsest pyramid level instead of
+///   zero, which markedly improves convergence under large inter-frame motion
+///   (e.g. gyroscope-predicted feature motion). `None` reproduces the classic
+///   zero-initialized behavior. Per-level propagation is unchanged.
 /// * `window_size` - Size of the search window (odd number)
 /// * `max_iterations` - Max iterations per pyramid level
 /// * `min_eigen_threshold` - Windows whose normalized minimum gradient
 ///   eigenvalue is below this value are reported as [`TrackStatus::LowTexture`].
 ///   See [`DEFAULT_MIN_EIGEN_THRESHOLD`].
+///
+/// # Panics
+/// Panics if `predicted` is `Some` but its length differs from `prev_points`.
 ///
 /// # Returns
 /// One [`TrackResult`] per input point, in the same order.
@@ -106,12 +116,20 @@ pub fn calc_optical_flow_ex(
     prev_pyramid: &[GrayImage],
     curr_pyramid: &[GrayImage],
     prev_points: &[(f32, f32)],
+    predicted: Option<&[(f32, f32)]>,
     window_size: usize,
     max_iterations: usize,
     min_eigen_threshold: f32,
 ) -> Vec<TrackResult> {
     assert_eq!(prev_pyramid.len(), curr_pyramid.len());
     assert!(window_size % 2 == 1, "Window size must be odd");
+    if let Some(predicted) = predicted {
+        assert_eq!(
+            predicted.len(),
+            prev_points.len(),
+            "predicted must have one entry per prev_point"
+        );
+    }
 
     let n_levels = prev_pyramid.len();
     let radius = window_size / 2;
@@ -121,7 +139,16 @@ pub fn calc_optical_flow_ex(
     let offsets = build_window_offsets(radius);
 
     // Total displacement per point, accumulated coarse-to-fine in level-0 units.
-    let mut displacements: Vec<(f32, f32)> = vec![(0.0, 0.0); prev_points.len()];
+    // Seeding it from a prediction makes the coarsest level start at the
+    // predicted position; everything else is identical to the zero-init path.
+    let mut displacements: Vec<(f32, f32)> = match predicted {
+        Some(predicted) => prev_points
+            .iter()
+            .zip(predicted.iter())
+            .map(|((px, py), (gx, gy))| (gx - px, gy - py))
+            .collect(),
+        None => vec![(0.0, 0.0); prev_points.len()],
+    };
     let mut statuses: Vec<TrackStatus> = vec![TrackStatus::Tracked; prev_points.len()];
     let mut errors: Vec<f32> = vec![f32::INFINITY; prev_points.len()];
 
