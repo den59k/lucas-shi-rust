@@ -120,7 +120,7 @@
       view.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         const [x, y] = eventToBuffer(e);
-        if (x >= 0 && y >= 0 && x < PW && y < PH) tracker.add_point(x, y);
+        if (x >= 0 && y >= 0 && x < PW && y < PH) tracker.add_point_snapped(x, y);
       });
       document.getElementById("clear").addEventListener("click", () => tracker.clear());
       document.getElementById("auto").addEventListener("click", () => tracker.auto_detect());
