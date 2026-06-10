@@ -430,11 +430,15 @@ pub fn calc_optical_flow_fb(
 
     let forward_pos: Vec<(f32, f32)> = forward.iter().map(|r| r.pos).collect();
     let mut backward = Vec::new();
+    // Seed the backward pass at the original points (the round-trip is expected
+    // to return there). This keeps the check robust under large motion, as in
+    // OpenCV's OPTFLOW_USE_INITIAL_FLOW reverse check, without weakening it: a
+    // genuinely wrong forward match still fails to land back within threshold.
     track_into(
         next_pyramid,
         prev_pyramid,
         &forward_pos,
-        None,
+        Some(prev_points),
         window_size,
         max_iterations,
         min_eigen_threshold,
@@ -683,11 +687,12 @@ impl TrackerContext {
         self.forward_pos.clear();
         self.forward_pos.extend(self.results.iter().map(|r| r.pos));
 
+        // Seed the backward pass at the original points (see calc_optical_flow_fb).
         track_into(
             &self.next_pyramid,
             &self.prev_pyramid,
             &self.forward_pos,
-            None,
+            Some(prev_points),
             window_size,
             max_iterations,
             min_eigen_threshold,

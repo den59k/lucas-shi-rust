@@ -16,6 +16,7 @@ nalgebra = "0.34.1"
 
 [dev-dependencies]
 imageproc = "0.26.1"
+criterion = "0.5"
 
 [[bench]]
 name = "gradients"
@@ -23,4 +24,8 @@ harness = false
 
 [[bench]]
 name = "lk"
+harness = false
+
+[[bench]]
+name = "tracking"
 harness = false
