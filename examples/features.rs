@@ -1,4 +1,4 @@
-use image::{open, GrayImage, Rgba};
+use image::{GrayImage, Rgba, open};
 use imageproc::drawing::draw_cross_mut;
 use optical_flow_lk::good_features_to_track;
 

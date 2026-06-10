@@ -2,7 +2,57 @@ use image::{GrayImage, ImageBuffer, Luma};
 
 use crate::utils::fast_gradients::compute_gradients;
 
-/// Compute optical flow using Lucas-Kanade method
+/// Default minimum-eigenvalue threshold used by [`calc_optical_flow`].
+///
+/// The minimum eigenvalue of the per-window spatial gradient matrix is
+/// normalized by the window area before comparison, so this threshold is
+/// independent of `window_size`. A window flatter than this is reported as
+/// [`TrackStatus::LowTexture`].
+pub const DEFAULT_MIN_EIGEN_THRESHOLD: f32 = 1e-3;
+
+/// Why a feature point ended up where it did after tracking.
+///
+/// See [`TrackResult`] for the coordinate convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrackStatus {
+    /// The iteration converged inside the image; the position is trustworthy.
+    Tracked,
+    /// The search window left the image (in the previous or the next frame).
+    OutOfBounds,
+    /// The iteration hit `max_iterations` without converging, or a step
+    /// exploded (non-finite or larger than the window).
+    Diverged,
+    /// The minimum eigenvalue of the spatial gradient matrix fell below the
+    /// configured threshold, i.e. the window is too flat to track reliably.
+    LowTexture,
+}
+
+/// Per-point result of [`calc_optical_flow_ex`].
+///
+/// # Coordinate convention
+/// Positions are in level-0 (full resolution) pixel coordinates. The origin is
+/// the center of the top-left pixel, x grows to the right and y downwards; this
+/// matches [`crate::good_features_to_track`] and bilinear sampling throughout
+/// the crate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackResult {
+    /// Tracked position in the next frame.
+    pub pos: (f32, f32),
+    /// Why tracking ended the way it did.
+    pub status: TrackStatus,
+    /// Mean absolute photometric residual over the window at the final
+    /// position, in 8-bit intensity units.
+    ///
+    /// Comparable across points regardless of `window_size`; intended for
+    /// downstream outlier gating. It is [`f32::INFINITY`] when no residual
+    /// could be measured (the window was out of bounds).
+    pub error: f32,
+}
+
+/// Compute optical flow using the pyramidal Lucas-Kanade method.
+///
+/// This is a thin wrapper over [`calc_optical_flow_ex`] that discards the
+/// per-point diagnostics.
 ///
 /// # Arguments
 /// * `prev_pyramid` - Previous frame (pyramid of grayscale)
@@ -13,6 +63,10 @@ use crate::utils::fast_gradients::compute_gradients;
 ///
 /// # Returns
 /// Vector of points on next frame
+#[deprecated(
+    since = "0.3.0",
+    note = "use `calc_optical_flow_ex`, which also returns per-point status and error"
+)]
 pub fn calc_optical_flow(
     prev_pyramid: &[GrayImage],
     curr_pyramid: &[GrayImage],
@@ -20,6 +74,42 @@ pub fn calc_optical_flow(
     window_size: usize,
     max_iterations: usize,
 ) -> Vec<(f32, f32)> {
+    calc_optical_flow_ex(
+        prev_pyramid,
+        curr_pyramid,
+        prev_points,
+        window_size,
+        max_iterations,
+        DEFAULT_MIN_EIGEN_THRESHOLD,
+    )
+    .into_iter()
+    .map(|r| r.pos)
+    .collect()
+}
+
+/// Compute optical flow using the pyramidal Lucas-Kanade method, returning a
+/// per-point [`TrackResult`] with status and photometric error.
+///
+/// # Arguments
+/// * `prev_pyramid` - Previous frame (pyramid of grayscale)
+/// * `curr_pyramid` - Next frame (pyramid of grayscale)
+/// * `prev_points` - Feature points to track (in prev frame, level-0 coordinates)
+/// * `window_size` - Size of the search window (odd number)
+/// * `max_iterations` - Max iterations per pyramid level
+/// * `min_eigen_threshold` - Windows whose normalized minimum gradient
+///   eigenvalue is below this value are reported as [`TrackStatus::LowTexture`].
+///   See [`DEFAULT_MIN_EIGEN_THRESHOLD`].
+///
+/// # Returns
+/// One [`TrackResult`] per input point, in the same order.
+pub fn calc_optical_flow_ex(
+    prev_pyramid: &[GrayImage],
+    curr_pyramid: &[GrayImage],
+    prev_points: &[(f32, f32)],
+    window_size: usize,
+    max_iterations: usize,
+    min_eigen_threshold: f32,
+) -> Vec<TrackResult> {
     assert_eq!(prev_pyramid.len(), curr_pyramid.len());
     assert!(window_size % 2 == 1, "Window size must be odd");
 
@@ -30,83 +120,96 @@ pub fn calc_optical_flow(
     let det_epsilon = 1e-6;
     let offsets = build_window_offsets(radius);
 
-    // Initialize displacements to zero
-    let mut displacements: Vec<(f32, f32)> = prev_points.iter().map(|_| (0.0, 0.0)).collect();
+    // Total displacement per point, accumulated coarse-to-fine in level-0 units.
+    let mut displacements: Vec<(f32, f32)> = vec![(0.0, 0.0); prev_points.len()];
+    let mut statuses: Vec<TrackStatus> = vec![TrackStatus::Tracked; prev_points.len()];
+    let mut errors: Vec<f32> = vec![f32::INFINITY; prev_points.len()];
 
-    // Process levels from top (coarse) to bottom (fine)
+    let mut prev_patch = vec![0.0f32; n_pixels];
+    let mut ix_patch = vec![0.0f32; n_pixels];
+    let mut iy_patch = vec![0.0f32; n_pixels];
+
+    // Process levels from top (coarse) to bottom (fine).
     for level in (0..n_levels).rev() {
         let scale = 2f32.powi(level as i32);
+        let is_finest = level == 0;
 
-        // Get the images for the current level
         let prev_img = &prev_pyramid[level];
         let curr_img = &curr_pyramid[level];
-
-        // Compute gradients for the previous image
-        // let grad_x = horizontal_scharr(prev_img);
-        // let grad_y = vertical_scharr(prev_img);
-        // console_log!("{}", performance.now()-now);
         let (grad_x, grad_y) = compute_gradients(prev_img);
 
-        let mut prev_patch = vec![0.0f32; n_pixels];
-        let mut ix_patch = vec![0.0f32; n_pixels];
-        let mut iy_patch = vec![0.0f32; n_pixels];
-
-        // Process each point
-        for ((prev_x, prev_y), disp) in prev_points.iter().zip(displacements.iter_mut()) {
-            // Scale the original point for the current level
+        for (idx, (prev_x, prev_y)) in prev_points.iter().enumerate() {
+            // Scale the original point for the current level.
             let x = *prev_x / scale;
             let y = *prev_y / scale;
 
-            // Add the current displacement, scaled for this level
-            let mut dx = disp.0 / scale;
-            let mut dy = disp.1 / scale;
+            // Add the current displacement, scaled for this level.
+            let mut dx = displacements[idx].0 / scale;
+            let mut dy = displacements[idx].1 / scale;
 
-            // Skip points outside image bounds
+            // The window must stay inside the previous image to build the patch.
             if !in_bounds(prev_img, x, y, radius) {
+                statuses[idx] = TrackStatus::OutOfBounds;
                 continue;
             }
 
+            // Spatial gradient matrix and cached previous/gradient patches.
             let mut gxx = 0.0f32;
             let mut gxy = 0.0f32;
             let mut gyy = 0.0f32;
 
-            for (idx, (ox, oy)) in offsets.iter().enumerate() {
+            for (i, (ox, oy)) in offsets.iter().enumerate() {
                 let sample_x = x + ox;
                 let sample_y = y + oy;
                 let ix = interpolate_alt(&grad_x, sample_x, sample_y) / 32.0;
                 let iy = interpolate_alt(&grad_y, sample_x, sample_y) / 32.0;
 
-                prev_patch[idx] = interpolate(prev_img, sample_x, sample_y);
-                ix_patch[idx] = ix;
-                iy_patch[idx] = iy;
+                prev_patch[i] = interpolate(prev_img, sample_x, sample_y);
+                ix_patch[i] = ix;
+                iy_patch[i] = iy;
                 gxx += ix * ix;
                 gxy += ix * iy;
                 gyy += iy * iy;
             }
 
+            // Reject low-texture windows up front (normalized by window area so
+            // the threshold does not depend on `window_size`).
+            let min_eig = min_eigenvalue(gxx, gxy, gyy) / n_pixels as f32;
+            if min_eig < min_eigen_threshold {
+                statuses[idx] = TrackStatus::LowTexture;
+                if is_finest {
+                    errors[idx] =
+                        window_error(curr_img, &prev_patch, &offsets, x + dx, y + dy, radius);
+                }
+                continue;
+            }
+
             let Some((inv_h00, inv_h01, inv_h11)) = invert_2x2(gxx, gxy, gyy, det_epsilon) else {
+                statuses[idx] = TrackStatus::LowTexture;
                 continue;
             };
 
-            // Refine the displacement at the current level
+            // Refine the displacement at the current level.
+            let mut converged = false;
+            let mut out_of_bounds = false;
+            let mut diverged = false;
             for _ in 0..max_iterations {
-                // Compute the current position in the target image
                 let curr_x = x + dx;
                 let curr_y = y + dy;
 
-                // Check bounds in the target image
                 if !in_bounds(curr_img, curr_x, curr_y, radius) {
+                    out_of_bounds = true;
                     break;
                 }
 
                 let mut bx = 0.0f32;
                 let mut by = 0.0f32;
 
-                for (idx, (ox, oy)) in offsets.iter().enumerate() {
+                for (i, (ox, oy)) in offsets.iter().enumerate() {
                     let curr = interpolate(curr_img, curr_x + ox, curr_y + oy);
-                    let error = prev_patch[idx] - curr;
-                    bx += ix_patch[idx] * error;
-                    by += iy_patch[idx] * error;
+                    let error = prev_patch[i] - curr;
+                    bx += ix_patch[i] * error;
+                    by += iy_patch[i] * error;
                 }
 
                 let ddx = inv_h00 * bx + inv_h01 * by;
@@ -114,22 +217,86 @@ pub fn calc_optical_flow(
                 dx += ddx;
                 dy += ddy;
 
+                // Guard against runaway steps.
+                if !dx.is_finite()
+                    || !dy.is_finite()
+                    || ddx.abs() > window_size as f32
+                    || ddy.abs() > window_size as f32
+                {
+                    diverged = true;
+                    break;
+                }
+
                 if ddx.abs() < epsilon && ddy.abs() < epsilon {
+                    converged = true;
                     break;
                 }
             }
 
-            // Update the total displacement with the current level scale
-            *disp = (dx * scale, dy * scale);
+            statuses[idx] = if out_of_bounds {
+                TrackStatus::OutOfBounds
+            } else if diverged || !converged {
+                TrackStatus::Diverged
+            } else {
+                TrackStatus::Tracked
+            };
+
+            // Update the total displacement with the current level scale.
+            displacements[idx] = (dx * scale, dy * scale);
+
+            if is_finest {
+                errors[idx] = if out_of_bounds {
+                    f32::INFINITY
+                } else {
+                    window_error(curr_img, &prev_patch, &offsets, x + dx, y + dy, radius)
+                };
+            }
         }
     }
 
-    // Return the final positions
     prev_points
         .iter()
-        .zip(displacements.iter())
-        .map(|((x, y), (dx, dy))| (x + dx, y + dy))
+        .enumerate()
+        .map(|(idx, (x, y))| {
+            let (dx, dy) = displacements[idx];
+            TrackResult {
+                pos: (x + dx, y + dy),
+                status: statuses[idx],
+                error: errors[idx],
+            }
+        })
         .collect()
+}
+
+/// Minimum eigenvalue of the symmetric 2x2 matrix `[[a, b], [b, c]]`.
+fn min_eigenvalue(a: f32, b: f32, c: f32) -> f32 {
+    let trace = a + c;
+    let det = a * c - b * b;
+    let disc = (trace * trace - 4.0 * det).max(0.0).sqrt();
+    (trace - disc) / 2.0
+}
+
+/// Mean absolute photometric residual between the cached previous patch and the
+/// next image sampled at `(cx, cy)`. Returns [`f32::INFINITY`] if the window is
+/// out of bounds.
+fn window_error(
+    img: &GrayImage,
+    prev_patch: &[f32],
+    offsets: &[(f32, f32)],
+    cx: f32,
+    cy: f32,
+    radius: usize,
+) -> f32 {
+    if !in_bounds(img, cx, cy, radius) {
+        return f32::INFINITY;
+    }
+
+    let mut sum = 0.0f32;
+    for (i, (ox, oy)) in offsets.iter().enumerate() {
+        let curr = interpolate(img, cx + ox, cy + oy);
+        sum += (prev_patch[i] - curr).abs();
+    }
+    sum / offsets.len() as f32
 }
 
 fn build_window_offsets(radius: usize) -> Vec<(f32, f32)> {

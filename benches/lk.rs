@@ -17,13 +17,19 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use image::{open, GrayImage, ImageBuffer, Luma};
+use image::{GrayImage, ImageBuffer, Luma, open};
 use imageproc::gradients::{horizontal_scharr, vertical_scharr};
 use nalgebra::{DMatrix, DVector, SVD};
 use optical_flow_lk::{build_pyramid, good_features_to_track};
 
 type GrayI16Image = ImageBuffer<Luma<i16>, Vec<i16>>;
 type GradientPyramid = Vec<(GrayI16Image, GrayI16Image)>;
+type LkCase = (
+    Vec<GrayImage>,
+    Vec<GrayImage>,
+    GradientPyramid,
+    Vec<(f32, f32)>,
+);
 
 fn calc_optical_flow_old_loop(
     prev_pyramid: &[GrayImage],
@@ -296,12 +302,7 @@ fn interpolate_alt(img: &GrayI16Image, x: f32, y: f32) -> f32 {
     sum
 }
 
-fn load_case() -> (
-    Vec<GrayImage>,
-    Vec<GrayImage>,
-    GradientPyramid,
-    Vec<(f32, f32)>,
-) {
+fn load_case() -> LkCase {
     let prev_frame: GrayImage = open("examples/input1.png").unwrap().into_luma8();
     let next_frame: GrayImage = open("examples/input2.png").unwrap().into_luma8();
     let prev_pyramid = build_pyramid(&prev_frame, 4);
