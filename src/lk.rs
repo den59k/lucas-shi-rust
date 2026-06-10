@@ -1,6 +1,7 @@
-use image::{GrayImage, ImageBuffer, Luma};
+use image::GrayImage;
 
-use crate::utils::fast_gradients::compute_gradients;
+use crate::pyramid::build_pyramid_into;
+use crate::utils::fast_gradients::compute_gradients_into;
 
 /// Default minimum-eigenvalue threshold used by [`calc_optical_flow`].
 ///
@@ -129,7 +130,56 @@ pub fn calc_optical_flow_ex(
     max_iterations: usize,
     min_eigen_threshold: f32,
 ) -> Vec<TrackResult> {
+    let mut scratch = Scratch::default();
+    let mut out = Vec::new();
+    track_into(
+        prev_pyramid,
+        curr_pyramid,
+        prev_points,
+        predicted,
+        window_size,
+        max_iterations,
+        min_eigen_threshold,
+        &mut scratch,
+        &mut out,
+    );
+    out
+}
+
+/// Reusable per-call scratch buffers for the Lucas-Kanade loop. Owned by
+/// [`TrackerContext`] (or created transiently by the free functions) so the
+/// steady-state hot path performs no heap allocation.
+#[derive(Default)]
+struct Scratch {
+    offsets: Vec<(f32, f32)>,
+    prev_patch: Vec<f32>,
+    ix_patch: Vec<f32>,
+    iy_patch: Vec<f32>,
+    displacements: Vec<(f32, f32)>,
+    grad_x: Vec<i16>,
+    grad_y: Vec<i16>,
+}
+
+/// Core pyramidal Lucas-Kanade loop, writing one [`TrackResult`] per point into
+/// `out`. All temporaries live in `scratch`; given sufficient capacity this is
+/// allocation-free.
+#[allow(clippy::too_many_arguments)]
+fn track_into(
+    prev_pyramid: &[GrayImage],
+    curr_pyramid: &[GrayImage],
+    prev_points: &[(f32, f32)],
+    predicted: Option<&[(f32, f32)]>,
+    window_size: usize,
+    max_iterations: usize,
+    min_eigen_threshold: f32,
+    scratch: &mut Scratch,
+    out: &mut Vec<TrackResult>,
+) {
     assert_eq!(prev_pyramid.len(), curr_pyramid.len());
+    assert!(
+        !prev_pyramid.is_empty(),
+        "pyramid must have at least 1 level"
+    );
     assert!(window_size % 2 == 1, "Window size must be odd");
     if let Some(predicted) = predicted {
         assert_eq!(
@@ -144,25 +194,51 @@ pub fn calc_optical_flow_ex(
     let n_pixels = window_size * window_size;
     let epsilon = 1e-3;
     let det_epsilon = 1e-6;
-    let offsets = build_window_offsets(radius);
+
+    let Scratch {
+        offsets,
+        prev_patch,
+        ix_patch,
+        iy_patch,
+        displacements,
+        grad_x: grad_x_buf,
+        grad_y: grad_y_buf,
+    } = scratch;
+
+    // Prepare reusable buffers. resize/clear+extend keep capacity, so none of
+    // this allocates once the buffers are warm.
+    build_window_offsets_into(radius, offsets);
+    prev_patch.resize(n_pixels, 0.0);
+    ix_patch.resize(n_pixels, 0.0);
+    iy_patch.resize(n_pixels, 0.0);
 
     // Total displacement per point, accumulated coarse-to-fine in level-0 units.
     // Seeding it from a prediction makes the coarsest level start at the
     // predicted position; everything else is identical to the zero-init path.
-    let mut displacements: Vec<(f32, f32)> = match predicted {
-        Some(predicted) => prev_points
-            .iter()
-            .zip(predicted.iter())
-            .map(|((px, py), (gx, gy))| (gx - px, gy - py))
-            .collect(),
-        None => vec![(0.0, 0.0); prev_points.len()],
-    };
-    let mut statuses: Vec<TrackStatus> = vec![TrackStatus::Tracked; prev_points.len()];
-    let mut errors: Vec<f32> = vec![f32::INFINITY; prev_points.len()];
+    displacements.clear();
+    match predicted {
+        Some(predicted) => displacements.extend(
+            prev_points
+                .iter()
+                .zip(predicted.iter())
+                .map(|((px, py), (gx, gy))| (gx - px, gy - py)),
+        ),
+        None => displacements.resize(prev_points.len(), (0.0, 0.0)),
+    }
 
-    let mut prev_patch = vec![0.0f32; n_pixels];
-    let mut ix_patch = vec![0.0f32; n_pixels];
-    let mut iy_patch = vec![0.0f32; n_pixels];
+    // One shared gradient buffer sized to the largest (level-0) image; smaller
+    // levels use a prefix slice.
+    let (w0, h0) = prev_pyramid[0].dimensions();
+    grad_x_buf.resize((w0 * h0) as usize, 0);
+    grad_y_buf.resize((w0 * h0) as usize, 0);
+
+    // Initialize results at the input positions; the loop refines them in place.
+    out.clear();
+    out.extend(prev_points.iter().map(|&(x, y)| TrackResult {
+        pos: (x, y),
+        status: TrackStatus::Tracked,
+        error: f32::INFINITY,
+    }));
 
     // Process levels from top (coarse) to bottom (fine).
     for level in (0..n_levels).rev() {
@@ -171,7 +247,16 @@ pub fn calc_optical_flow_ex(
 
         let prev_img = &prev_pyramid[level];
         let curr_img = &curr_pyramid[level];
-        let (grad_x, grad_y) = compute_gradients(prev_img);
+        let (lw, lh) = prev_img.dimensions();
+        let level_pixels = (lw * lh) as usize;
+
+        compute_gradients_into(
+            prev_img,
+            &mut grad_x_buf[..level_pixels],
+            &mut grad_y_buf[..level_pixels],
+        );
+        let grad_x = &grad_x_buf[..level_pixels];
+        let grad_y = &grad_y_buf[..level_pixels];
 
         for (idx, (prev_x, prev_y)) in prev_points.iter().enumerate() {
             // Scale the original point for the current level.
@@ -184,7 +269,7 @@ pub fn calc_optical_flow_ex(
 
             // The window must stay inside the previous image to build the patch.
             if !in_bounds(prev_img, x, y, radius) {
-                statuses[idx] = TrackStatus::OutOfBounds;
+                out[idx].status = TrackStatus::OutOfBounds;
                 continue;
             }
 
@@ -196,8 +281,8 @@ pub fn calc_optical_flow_ex(
             for (i, (ox, oy)) in offsets.iter().enumerate() {
                 let sample_x = x + ox;
                 let sample_y = y + oy;
-                let ix = interpolate_alt(&grad_x, sample_x, sample_y) / 32.0;
-                let iy = interpolate_alt(&grad_y, sample_x, sample_y) / 32.0;
+                let ix = interpolate_i16(grad_x, lw, lh, sample_x, sample_y) / 32.0;
+                let iy = interpolate_i16(grad_y, lw, lh, sample_x, sample_y) / 32.0;
 
                 prev_patch[i] = interpolate(prev_img, sample_x, sample_y);
                 ix_patch[i] = ix;
@@ -211,16 +296,16 @@ pub fn calc_optical_flow_ex(
             // the threshold does not depend on `window_size`).
             let min_eig = min_eigenvalue(gxx, gxy, gyy) / n_pixels as f32;
             if min_eig < min_eigen_threshold {
-                statuses[idx] = TrackStatus::LowTexture;
+                out[idx].status = TrackStatus::LowTexture;
                 if is_finest {
-                    errors[idx] =
-                        window_error(curr_img, &prev_patch, &offsets, x + dx, y + dy, radius);
+                    out[idx].error =
+                        window_error(curr_img, prev_patch, offsets, x + dx, y + dy, radius);
                 }
                 continue;
             }
 
             let Some((inv_h00, inv_h01, inv_h11)) = invert_2x2(gxx, gxy, gyy, det_epsilon) else {
-                statuses[idx] = TrackStatus::LowTexture;
+                out[idx].status = TrackStatus::LowTexture;
                 continue;
             };
 
@@ -268,7 +353,7 @@ pub fn calc_optical_flow_ex(
                 }
             }
 
-            statuses[idx] = if out_of_bounds {
+            out[idx].status = if out_of_bounds {
                 TrackStatus::OutOfBounds
             } else if diverged || !converged {
                 TrackStatus::Diverged
@@ -280,27 +365,20 @@ pub fn calc_optical_flow_ex(
             displacements[idx] = (dx * scale, dy * scale);
 
             if is_finest {
-                errors[idx] = if out_of_bounds {
+                out[idx].error = if out_of_bounds {
                     f32::INFINITY
                 } else {
-                    window_error(curr_img, &prev_patch, &offsets, x + dx, y + dy, radius)
+                    window_error(curr_img, prev_patch, offsets, x + dx, y + dy, radius)
                 };
             }
         }
     }
 
-    prev_points
-        .iter()
-        .enumerate()
-        .map(|(idx, (x, y))| {
-            let (dx, dy) = displacements[idx];
-            TrackResult {
-                pos: (x + dx, y + dy),
-                status: statuses[idx],
-                error: errors[idx],
-            }
-        })
-        .collect()
+    // Fold accumulated displacements into the reported positions.
+    for (idx, (x, y)) in prev_points.iter().enumerate() {
+        let (dx, dy) = displacements[idx];
+        out[idx].pos = (x + dx, y + dy);
+    }
 }
 
 /// Track points prev->next, then re-track the results next->prev, and flag any
@@ -336,7 +414,9 @@ pub fn calc_optical_flow_fb(
     min_eigen_threshold: f32,
     fb_threshold: f32,
 ) -> Vec<TrackResult> {
-    let mut forward = calc_optical_flow_ex(
+    let mut scratch = Scratch::default();
+    let mut forward = Vec::new();
+    track_into(
         prev_pyramid,
         next_pyramid,
         prev_points,
@@ -344,10 +424,13 @@ pub fn calc_optical_flow_fb(
         window_size,
         max_iterations,
         min_eigen_threshold,
+        &mut scratch,
+        &mut forward,
     );
 
     let forward_pos: Vec<(f32, f32)> = forward.iter().map(|r| r.pos).collect();
-    let backward = calc_optical_flow_ex(
+    let mut backward = Vec::new();
+    track_into(
         next_pyramid,
         prev_pyramid,
         &forward_pos,
@@ -355,6 +438,8 @@ pub fn calc_optical_flow_fb(
         window_size,
         max_iterations,
         min_eigen_threshold,
+        &mut scratch,
+        &mut backward,
     );
 
     mark_fb_inconsistent(&mut forward, &backward, prev_points, fb_threshold);
@@ -416,16 +501,17 @@ fn window_error(
     sum / offsets.len() as f32
 }
 
-fn build_window_offsets(radius: usize) -> Vec<(f32, f32)> {
-    let mut offsets = Vec::with_capacity((2 * radius + 1) * (2 * radius + 1));
+/// Fills `offsets` with the `(dx, dy)` window sample positions for the given
+/// radius, reusing the existing capacity.
+fn build_window_offsets_into(radius: usize, offsets: &mut Vec<(f32, f32)>) {
+    offsets.clear();
+    offsets.reserve((2 * radius + 1) * (2 * radius + 1));
 
     for j in -(radius as i32)..=radius as i32 {
         for i in -(radius as i32)..=radius as i32 {
             offsets.push((i as f32, j as f32));
         }
     }
-
-    offsets
 }
 
 fn invert_2x2(a00: f32, a01: f32, a11: f32, det_epsilon: f32) -> Option<(f32, f32, f32)> {
@@ -470,7 +556,9 @@ fn interpolate(img: &GrayImage, x: f32, y: f32) -> f32 {
     sum
 }
 
-fn interpolate_alt(img: &ImageBuffer<Luma<i16>, Vec<i16>>, x: f32, y: f32) -> f32 {
+/// Bilinear interpolation over a raw `i16` gradient buffer (`width * height`,
+/// row-major). Out-of-bounds samples read as 0, matching [`interpolate`].
+fn interpolate_i16(data: &[i16], width: u32, height: u32, x: f32, y: f32) -> f32 {
     let x0 = x.floor() as i32;
     let y0 = y.floor() as i32;
     let x1 = x0 + 1;
@@ -481,10 +569,11 @@ fn interpolate_alt(img: &ImageBuffer<Luma<i16>, Vec<i16>>, x: f32, y: f32) -> f3
 
     let mut sum = 0.0;
     for (sx, sy) in &[(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
-        let px = img
-            .get_pixel_checked(*sx as u32, *sy as u32)
-            .map(|p| p[0] as f32)
-            .unwrap_or(0.0);
+        let px = if *sx >= 0 && *sy >= 0 && (*sx as u32) < width && (*sy as u32) < height {
+            data[(*sy as u32 * width + *sx as u32) as usize] as f32
+        } else {
+            0.0
+        };
 
         let wx = if sx == &x0 { 1.0 - dx } else { dx };
         let wy = if sy == &y0 { 1.0 - dy } else { dy };
@@ -493,6 +582,122 @@ fn interpolate_alt(img: &ImageBuffer<Luma<i16>, Vec<i16>>, x: f32, y: f32) -> f3
     }
 
     sum
+}
+
+/// Reusable owner of every buffer the tracking hot path touches: both frame
+/// pyramids, the Lucas-Kanade scratch, the result vector and the
+/// forward-backward intermediates.
+///
+/// Create one per tracking thread and call [`prepare`](Self::prepare) then
+/// [`track`](Self::track) / [`track_fb`](Self::track_fb) each frame. After the
+/// first (warm-up) frame, a steady-state step with a fixed image size, level
+/// count, window size and point count performs **no heap allocation** — all
+/// buffers are resized in place. This is the allocation-free path the VIO
+/// front-end runs every frame; the free functions
+/// ([`calc_optical_flow_ex`], [`calc_optical_flow_fb`]) are thin convenience
+/// wrappers that allocate their own scratch.
+#[derive(Default)]
+pub struct TrackerContext {
+    prev_pyramid: Vec<GrayImage>,
+    next_pyramid: Vec<GrayImage>,
+    scratch: Scratch,
+    results: Vec<TrackResult>,
+    forward_pos: Vec<(f32, f32)>,
+    backward: Vec<TrackResult>,
+}
+
+impl TrackerContext {
+    /// Creates an empty context. Buffers grow to fit on the first
+    /// [`prepare`](Self::prepare) / [`track`](Self::track) call and are reused
+    /// thereafter.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builds the previous- and next-frame pyramids into the context's reusable
+    /// buffers. Zero-alloc in steady state (same image size and `levels`).
+    pub fn prepare(&mut self, prev: &GrayImage, next: &GrayImage, levels: usize) {
+        build_pyramid_into(prev, levels, &mut self.prev_pyramid);
+        build_pyramid_into(next, levels, &mut self.next_pyramid);
+    }
+
+    /// The previous-frame pyramid built by the last [`prepare`](Self::prepare).
+    pub fn prev_pyramid(&self) -> &[GrayImage] {
+        &self.prev_pyramid
+    }
+
+    /// The next-frame pyramid built by the last [`prepare`](Self::prepare).
+    pub fn next_pyramid(&self) -> &[GrayImage] {
+        &self.next_pyramid
+    }
+
+    /// Tracks `prev_points` using the prepared pyramids, returning the results
+    /// held inside the context. See [`calc_optical_flow_ex`] for the argument
+    /// semantics. Allocation-free in steady state.
+    pub fn track(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        window_size: usize,
+        max_iterations: usize,
+        min_eigen_threshold: f32,
+    ) -> &[TrackResult] {
+        track_into(
+            &self.prev_pyramid,
+            &self.next_pyramid,
+            prev_points,
+            predicted,
+            window_size,
+            max_iterations,
+            min_eigen_threshold,
+            &mut self.scratch,
+            &mut self.results,
+        );
+        &self.results
+    }
+
+    /// Forward-backward consistent tracking using the prepared pyramids. See
+    /// [`calc_optical_flow_fb`] for semantics. Reuses the context's scratch and
+    /// intermediate point buffers, so it is allocation-free in steady state.
+    pub fn track_fb(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        window_size: usize,
+        max_iterations: usize,
+        min_eigen_threshold: f32,
+        fb_threshold: f32,
+    ) -> &[TrackResult] {
+        track_into(
+            &self.prev_pyramid,
+            &self.next_pyramid,
+            prev_points,
+            predicted,
+            window_size,
+            max_iterations,
+            min_eigen_threshold,
+            &mut self.scratch,
+            &mut self.results,
+        );
+
+        self.forward_pos.clear();
+        self.forward_pos.extend(self.results.iter().map(|r| r.pos));
+
+        track_into(
+            &self.next_pyramid,
+            &self.prev_pyramid,
+            &self.forward_pos,
+            None,
+            window_size,
+            max_iterations,
+            min_eigen_threshold,
+            &mut self.scratch,
+            &mut self.backward,
+        );
+
+        mark_fb_inconsistent(&mut self.results, &self.backward, prev_points, fb_threshold);
+        &self.results
+    }
 }
 
 #[cfg(test)]

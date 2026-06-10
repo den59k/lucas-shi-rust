@@ -17,7 +17,7 @@ pub use features::{good_features_to_track, good_features_to_track_grid};
 #[allow(deprecated)]
 pub use lk::calc_optical_flow;
 pub use lk::{
-    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackResult, TrackStatus,
+    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackResult, TrackStatus, TrackerContext,
     calc_optical_flow_ex, calc_optical_flow_fb,
 };
-pub use pyramid::build_pyramid;
+pub use pyramid::{build_pyramid, build_pyramid_into};

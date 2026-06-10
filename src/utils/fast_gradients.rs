@@ -14,56 +14,83 @@ type GradientProduct = (
     ImageBuffer<Luma<i16>, Vec<i16>>,
 );
 
-/// Computes signed Scharr gradients.
+/// Computes signed Scharr gradients, allocating fresh output buffers.
+///
+/// Prefer [`compute_gradients_into`] on a hot path so the gradient buffers can
+/// be reused across frames.
+pub fn compute_gradients(img: &GrayImage) -> GradientProduct {
+    let (width, height) = img.dimensions();
+    let mut grad_x = vec![0i16; (width * height) as usize];
+    let mut grad_y = vec![0i16; (width * height) as usize];
+    compute_gradients_into(img, &mut grad_x, &mut grad_y);
+    (
+        ImageBuffer::from_vec(width, height, grad_x).unwrap(),
+        ImageBuffer::from_vec(width, height, grad_y).unwrap(),
+    )
+}
+
+/// Computes signed Scharr gradients into caller-provided buffers (length
+/// `width * height` each), performing no heap allocation.
 ///
 /// Selection is done per target:
 /// - `aarch64`: NEON
 /// - `x86`/`x86_64`: runtime AVX2 detection, otherwise scalar fallback
 /// - everything else: historical scalar implementation
 #[cfg(target_arch = "aarch64")]
-pub fn compute_gradients(img: &GrayImage) -> GradientProduct {
-    unsafe { compute_gradients_neon(img) }
+pub fn compute_gradients_into(img: &GrayImage, grad_x: &mut [i16], grad_y: &mut [i16]) {
+    unsafe { compute_gradients_neon_into(img, grad_x, grad_y) }
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub fn compute_gradients(img: &GrayImage) -> GradientProduct {
+pub fn compute_gradients_into(img: &GrayImage, grad_x: &mut [i16], grad_y: &mut [i16]) {
     if is_x86_feature_detected!("avx2") {
         unsafe {
-            return compute_gradients_avx2(img);
+            compute_gradients_avx2_into(img, grad_x, grad_y);
         }
+        return;
     }
 
-    compute_gradients_manual(img, &HORIZONTAL_SCHARR_3X3_OLD, &VERTICAL_SCHARR_3X3_OLD)
+    compute_gradients_manual_into(
+        img,
+        &HORIZONTAL_SCHARR_3X3_OLD,
+        &VERTICAL_SCHARR_3X3_OLD,
+        grad_x,
+        grad_y,
+    );
 }
 
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
-pub fn compute_gradients(img: &GrayImage) -> GradientProduct {
-    compute_gradients_manual(img, &HORIZONTAL_SCHARR_3X3_OLD, &VERTICAL_SCHARR_3X3_OLD)
+pub fn compute_gradients_into(img: &GrayImage, grad_x: &mut [i16], grad_y: &mut [i16]) {
+    compute_gradients_manual_into(
+        img,
+        &HORIZONTAL_SCHARR_3X3_OLD,
+        &VERTICAL_SCHARR_3X3_OLD,
+        grad_x,
+        grad_y,
+    );
 }
 
-#[cfg(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64"))]
-fn zero_gradients(width: u32, height: u32) -> GradientProduct {
-    (
-        ImageBuffer::new(width, height),
-        ImageBuffer::new(width, height),
-    )
-}
-
-fn compute_gradients_manual(
+fn compute_gradients_manual_into(
     img: &GrayImage,
     kernel_x: &[i32; 9],
     kernel_y: &[i32; 9],
-) -> GradientProduct {
+    grad_x: &mut [i16],
+    grad_y: &mut [i16],
+) {
     let (width, height) = img.dimensions();
-    let mut grad_x = ImageBuffer::new(width, height);
-    let mut grad_y = ImageBuffer::new(width, height);
+    let width = width as usize;
 
-    if width < 3 || height < 3 {
-        return (grad_x, grad_y);
+    // Borders are never written below, so clear the whole buffer first; this
+    // also wipes any data left over from a previous (reused) frame.
+    grad_x.fill(0);
+    grad_y.fill(0);
+
+    if width < 3 || (height as usize) < 3 {
+        return;
     }
 
     for y in 1..height - 1 {
-        for x in 1..width - 1 {
+        for x in 1..width as u32 - 1 {
             let mut gx: i32 = 0;
             let mut gy: i32 = 0;
 
@@ -75,28 +102,28 @@ fn compute_gradients_manual(
                 }
             }
 
-            grad_x.put_pixel(x, y, Luma([gx as i16]));
-            grad_y.put_pixel(x, y, Luma([gy as i16]));
+            let idx = y as usize * width + x as usize;
+            grad_x[idx] = gx as i16;
+            grad_y[idx] = gy as i16;
         }
     }
-
-    (grad_x, grad_y)
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
-unsafe fn compute_gradients_avx2(img: &GrayImage) -> GradientProduct {
+unsafe fn compute_gradients_avx2_into(img: &GrayImage, grad_x: &mut [i16], grad_y: &mut [i16]) {
     let (width_u32, height_u32) = img.dimensions();
     let width = width_u32 as usize;
     let height = height_u32 as usize;
 
+    grad_x.fill(0);
+    grad_y.fill(0);
+
     if width < 3 || height < 3 {
-        return zero_gradients(width_u32, height_u32);
+        return;
     }
 
     let src = img.as_raw();
-    let mut grad_x = vec![0i16; width * height];
-    let mut grad_y = vec![0i16; width * height];
 
     let coeff3 = _mm256_set1_epi16(3);
     let coeff10 = _mm256_set1_epi16(10);
@@ -164,11 +191,6 @@ unsafe fn compute_gradients_avx2(img: &GrayImage) -> GradientProduct {
             x += 1;
         }
     }
-
-    (
-        ImageBuffer::from_vec(width_u32, height_u32, grad_x).unwrap(),
-        ImageBuffer::from_vec(width_u32, height_u32, grad_y).unwrap(),
-    )
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -179,18 +201,19 @@ unsafe fn load_u8x16_as_i16(ptr: *const u8) -> __m256i {
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-unsafe fn compute_gradients_neon(img: &GrayImage) -> GradientProduct {
+unsafe fn compute_gradients_neon_into(img: &GrayImage, grad_x: &mut [i16], grad_y: &mut [i16]) {
     let (width_u32, height_u32) = img.dimensions();
     let width = width_u32 as usize;
     let height = height_u32 as usize;
 
+    grad_x.fill(0);
+    grad_y.fill(0);
+
     if width < 3 || height < 3 {
-        return zero_gradients(width_u32, height_u32);
+        return;
     }
 
     let src = img.as_raw();
-    let mut grad_x = vec![0i16; width * height];
-    let mut grad_y = vec![0i16; width * height];
 
     let coeff3 = vdupq_n_s16(3);
     let coeff10 = vdupq_n_s16(10);
@@ -275,11 +298,6 @@ unsafe fn compute_gradients_neon(img: &GrayImage) -> GradientProduct {
             x += 1;
         }
     }
-
-    (
-        ImageBuffer::from_vec(width_u32, height_u32, grad_x).unwrap(),
-        ImageBuffer::from_vec(width_u32, height_u32, grad_y).unwrap(),
-    )
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -295,6 +313,22 @@ unsafe fn load_u8x16_as_i16x8x2(ptr: *const u8) -> (int16x8_t, int16x8_t) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Allocating manual reference used by the equivalence test.
+    fn compute_gradients_manual(
+        img: &GrayImage,
+        kernel_x: &[i32; 9],
+        kernel_y: &[i32; 9],
+    ) -> GradientProduct {
+        let (width, height) = img.dimensions();
+        let mut grad_x = vec![0i16; (width * height) as usize];
+        let mut grad_y = vec![0i16; (width * height) as usize];
+        compute_gradients_manual_into(img, kernel_x, kernel_y, &mut grad_x, &mut grad_y);
+        (
+            ImageBuffer::from_vec(width, height, grad_x).unwrap(),
+            ImageBuffer::from_vec(width, height, grad_y).unwrap(),
+        )
+    }
 
     fn make_test_image(width: u32, height: u32) -> GrayImage {
         let mut img = GrayImage::new(width, height);

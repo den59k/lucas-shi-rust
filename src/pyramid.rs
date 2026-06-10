@@ -12,24 +12,40 @@ use image::{GrayImage, ImageBuffer, Luma};
 /// Vector of layers in descending order of size. First element is source image
 pub fn build_pyramid(image: &GrayImage, levels: usize) -> Vec<GrayImage> {
     let mut pyramid = Vec::new();
-    pyramid.push(image.clone());
+    build_pyramid_into(image, levels, &mut pyramid);
+    pyramid
+}
 
+/// Builds the pyramid into an existing buffer, reusing each level's storage when
+/// its dimensions are unchanged.
+///
+/// In steady state (same image size and `levels` every call) this performs no
+/// heap allocation: each level's pixel buffer is overwritten in place. The
+/// `pyramid` is resized to the actual number of produced levels.
+pub fn build_pyramid_into(image: &GrayImage, levels: usize, pyramid: &mut Vec<GrayImage>) {
+    // Level 0 is a copy of the source into the (reused) buffer.
+    ensure_level(pyramid, 0, image.width(), image.height());
+    pyramid[0].copy_from_slice(image.as_raw());
+
+    let mut produced = 1;
     for level in 1..levels {
-        let previous_level = &pyramid[level - 1];
-        let (width, height) = (previous_level.width(), previous_level.height());
+        let (prev_w, prev_h) = pyramid[level - 1].dimensions();
 
-        // Check that the image can be downscaled
-        if width < 2 || height < 2 {
+        // Stop when the previous level can no longer be halved.
+        if prev_w < 2 || prev_h < 2 {
             break;
         }
 
-        let new_width = width / 2;
-        let new_height = height / 2;
+        let (new_w, new_h) = (prev_w / 2, prev_h / 2);
+        ensure_level(pyramid, level, new_w, new_h);
 
-        let mut new_image = ImageBuffer::new(new_width, new_height);
+        // Borrow the previous (read) and current (write) levels disjointly.
+        let (head, tail) = pyramid.split_at_mut(level);
+        let previous_level = &head[level - 1];
+        let new_image = &mut tail[0];
 
-        for y in 0..new_height {
-            for x in 0..new_width {
+        for y in 0..new_h {
+            for x in 0..new_w {
                 let px = 2 * x;
                 let py = 2 * y;
 
@@ -45,8 +61,20 @@ pub fn build_pyramid(image: &GrayImage, levels: usize) -> Vec<GrayImage> {
             }
         }
 
-        pyramid.push(new_image);
+        produced += 1;
     }
 
-    pyramid
+    pyramid.truncate(produced);
+}
+
+/// Ensures `pyramid[index]` exists with the given dimensions, allocating only
+/// when the slot is missing or its size changed.
+fn ensure_level(pyramid: &mut Vec<GrayImage>, index: usize, width: u32, height: u32) {
+    if index < pyramid.len() {
+        if pyramid[index].dimensions() != (width, height) {
+            pyramid[index] = ImageBuffer::new(width, height);
+        }
+    } else {
+        pyramid.push(ImageBuffer::new(width, height));
+    }
 }
