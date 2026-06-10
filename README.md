@@ -7,35 +7,75 @@ High-performance Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi
 
 ## Features
 
-- 🔍 Efficient feature point detection using Shi-Tomasi
-- 🖼️ Integration with `image` and `imageproc` crates
-- 🌐 WebAssembly (Wasm) compatible
+- 🎯 Pyramidal Lucas-Kanade optical flow with per-point status and photometric error
+- 🔁 Forward-backward consistency check to reject occlusions and outliers
+- 🧭 Optional motion prediction (initial guess) for large inter-frame displacements
+- 🔍 Shi-Tomasi feature detection, plus grid-based detection for uniform coverage
+- ♻️ Zero-allocation steady-state path (`TrackerContext`) for real-time per-frame tracking
+- ⚡ SIMD-accelerated gradients and pyramid: AVX2 (x86), NEON (aarch64), `simd128` (wasm)
+- 🌐 Built on the [`image`](https://crates.io/crates/image) crate; WebAssembly-ready
 
 ## Usage
 
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-optical-flow-lk = "0.1"
+optical-flow-lk = "0.3"
 ```
 
-Basic example:
+Basic example — detect corners in one frame and track them into the next:
 ```rust
-use image::{open, GrayImage, Rgba};
-use optical_flow_lk::{build_pyramid, calc_optical_flow, good_features_to_track};
+use image::{open, GrayImage};
+use optical_flow_lk::{
+    build_pyramid, calc_optical_flow_ex, good_features_to_track,
+    TrackStatus, DEFAULT_MIN_EIGEN_THRESHOLD,
+};
 
-let prev_frame: GrayImage = open("examples/input1.png").unwrap().clone().into_luma8();
-let next_frame: GrayImage = open("examples/input2.png").unwrap().clone().into_luma8();
+let prev: GrayImage = open("examples/input1.png").unwrap().into_luma8();
+let next: GrayImage = open("examples/input2.png").unwrap().into_luma8();
 
-let prev_frame_pyr = build_pyramid(&prev_frame, 4);
-let next_frame_pyr = build_pyramid(&next_frame, 4);
+let prev_pyr = build_pyramid(&prev, 4);
+let next_pyr = build_pyramid(&next, 4);
 
-let mut points = good_features_to_track(&prev_frame, 0.1, 5);
-points.truncate(100);
-let prev_points: Vec<(f32, f32)> = points.iter().map(|&x| (x.0 as f32, x.1 as f32)).collect();
+let mut corners = good_features_to_track(&prev, 0.1, 5);
+corners.truncate(100);
+let points: Vec<(f32, f32)> = corners.iter().map(|&(x, y, _)| (x as f32, y as f32)).collect();
 
-let next_points = calc_optical_flow(&prev_frame_pyr, &next_frame_pyr, &prev_points, 21, 30);
+// `None` = no initial guess; 21px window, 30 iterations per level.
+let results = calc_optical_flow_ex(
+    &prev_pyr, &next_pyr, &points, None, 21, 30, DEFAULT_MIN_EIGEN_THRESHOLD,
+);
+
+for (start, r) in points.iter().zip(&results) {
+    if r.status == TrackStatus::Tracked {
+        println!("{start:?} -> {:?} (error {:.1})", r.pos, r.error);
+    }
+}
 ```
+
+### Real-time tracking
+
+For per-frame tracking (e.g. a VIO front-end or the web demo), reuse a
+[`TrackerContext`]. After the first frame it performs no heap allocation, and
+`track_fb` adds the forward-backward consistency check:
+
+```rust
+use optical_flow_lk::{TrackerContext, DEFAULT_MIN_EIGEN_THRESHOLD, DEFAULT_FB_THRESHOLD};
+
+let mut ctx = TrackerContext::new();
+
+// Per frame pair (`prev`, `next` are `&GrayImage`):
+ctx.prepare(&prev, &next, 4);
+let results = ctx.track_fb(
+    &points, None, 21, 30, DEFAULT_MIN_EIGEN_THRESHOLD, DEFAULT_FB_THRESHOLD,
+);
+// Points flagged `TrackStatus::FbInconsistent` failed the round-trip.
+```
+
+[`TrackerContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.TrackerContext.html
+
+> The original `calc_optical_flow` is still available but **deprecated** since
+> 0.3.0 — prefer `calc_optical_flow_ex` (status + error) or `TrackerContext`.
 
 ## Live demo
 
@@ -49,10 +89,11 @@ Source and build instructions are in [`web-demo/`](web-demo/).
 
 ## WebAssembly
 
-The Scharr gradient kernel has a hand-written `simd128` path that is selected
-automatically on `wasm32` — **but only when the target is built with SIMD
-enabled**, since WASM has no runtime feature detection. The bundled
-[`.cargo/config.toml`](.cargo/config.toml) sets this for you:
+The hot image kernels — the Scharr gradients and the pyramid downsample — have
+hand-written `simd128` paths that are selected automatically on `wasm32`
+— **but only when the target is built with SIMD enabled**, since WASM has no
+runtime feature detection. The bundled [`.cargo/config.toml`](.cargo/config.toml)
+sets this for you:
 
 ```toml
 [target.wasm32-unknown-unknown]
@@ -66,7 +107,8 @@ up), pass it yourself:
 RUSTFLAGS="-C target-feature=+simd128" cargo build --release --target wasm32-unknown-unknown
 ```
 
-Without `+simd128` the crate still works, falling back to a scalar gradient
-loop. For production WASM, also run `wasm-opt -O3` on the output. On a 640×480
-per-frame track step, the simd128 build plus the bounds-check-free bilinear
-sampler is roughly **2× faster** than the scalar build in V8 (Node).
+Without `+simd128` the crate still works, falling back to scalar loops. For
+production WASM, also run `wasm-opt -O3` on the output (`wasm-pack` does this
+automatically). On a 640×480 per-frame track step, the `simd128` build plus the
+bounds-check-free bilinear sampler is roughly **2× faster** than the scalar
+build in V8 (Node).
