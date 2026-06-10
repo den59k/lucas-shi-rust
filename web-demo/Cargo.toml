@@ -1,0 +1,22 @@
+# Standalone workspace so the wasm demo builds independently of the library
+# package while still depending on it by path.
+[workspace]
+
+[package]
+name = "web-demo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+optical-flow-lk = { path = ".." }
+image = { version = "0.25", default-features = false }
+wasm-bindgen = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

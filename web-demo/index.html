@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Optical Flow demo</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%; background: #111; color: #eee;
+      font-family: system-ui, sans-serif; overflow: hidden;
+      -webkit-user-select: none; user-select: none;
+    }
+    #stage {
+      position: fixed; inset: 0; display: flex;
+      align-items: center; justify-content: center;
+    }
+    /* Internal canvas size is the processing resolution; CSS scales it to fit. */
+    #view {
+      max-width: 100vw; max-height: 100vh;
+      width: auto; height: auto; touch-action: none; background: #000;
+    }
+    #bar {
+      position: fixed; left: 0; right: 0; top: 0; padding: 10px 12px;
+      display: flex; gap: 10px; align-items: center;
+      background: linear-gradient(#000a, #0000); font-size: 14px;
+    }
+    #bar button {
+      background: #2563eb; color: #fff; border: 0; border-radius: 8px;
+      padding: 8px 14px; font-size: 14px; font-weight: 600;
+    }
+    #hint {
+      position: fixed; left: 0; right: 0; bottom: 0; padding: 10px 12px;
+      text-align: center; font-size: 13px; color: #bbb;
+      background: linear-gradient(#0000, #000a);
+    }
+    #stat { margin-left: auto; font-variant-numeric: tabular-nums; color: #9ca3af; }
+    #msg {
+      position: fixed; inset: 0; display: none; padding: 24px;
+      align-items: center; justify-content: center; text-align: center;
+      background: #111; font-size: 16px; line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage"><canvas id="view"></canvas></div>
+
+  <div id="bar">
+    <button id="clear">Clear</button>
+    <span id="stat">starting…</span>
+  </div>
+  <div id="hint">Tap the video to drop a point — it rides the optical flow.</div>
+  <div id="msg"></div>
+
+  <script type="module">
+    import init, { Tracker } from "./pkg/web_demo.js";
+
+    const view = document.getElementById("view");
+    const ctx = view.getContext("2d", { willReadFrequently: true });
+    const stat = document.getElementById("stat");
+    const msg = document.getElementById("msg");
+
+    function fail(text) {
+      msg.style.display = "flex";
+      msg.innerHTML = text;
+    }
+
+    // Longer side of the processing buffer. Smaller = faster, less precise.
+    const TARGET = 360;
+    let PW = 0, PH = 0;
+    let tracker = null;
+    let gray = null;
+
+    async function main() {
+      await init();
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        fail("Camera API unavailable.<br>Open this page over <b>HTTPS</b> (or localhost).");
+        return;
+      }
+
+      const video = document.createElement("video");
+      video.playsInline = true; video.muted = true;
+      let stream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } }, audio: false,
+        });
+      } catch (e) {
+        fail("Could not access the camera.<br>" + e + "<br><br>Camera needs HTTPS and permission.");
+        return;
+      }
+      video.srcObject = stream;
+      await video.play();
+
+      // Pick a processing resolution that preserves the camera's aspect ratio.
+      const vw = video.videoWidth || 640, vh = video.videoHeight || 480;
+      const scale = TARGET / Math.max(vw, vh);
+      PW = Math.round(vw * scale / 2) * 2;
+      PH = Math.round(vh * scale / 2) * 2;
+      view.width = PW; view.height = PH;
+      gray = new Uint8Array(PW * PH);
+      tracker = new Tracker(PW, PH);
+
+      addPointHandlers();
+      requestAnimationFrame(() => loop(video));
+    }
+
+    // Map a pointer event to processing-buffer coordinates.
+    function eventToBuffer(e) {
+      const r = view.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width * PW;
+      const y = (e.clientY - r.top) / r.height * PH;
+      return [x, y];
+    }
+
+    function addPointHandlers() {
+      view.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        const [x, y] = eventToBuffer(e);
+        if (x >= 0 && y >= 0 && x < PW && y < PH) tracker.add_point(x, y);
+      });
+      document.getElementById("clear").addEventListener("click", () => tracker.clear());
+    }
+
+    let lastT = performance.now(), frames = 0, fps = 0;
+
+    function loop(video) {
+      // Draw the current camera frame into the processing buffer.
+      ctx.drawImage(video, 0, 0, PW, PH);
+      const data = ctx.getImageData(0, 0, PW, PH).data;
+
+      // RGBA -> luma (Rec. 601, integer approximation).
+      for (let i = 0, j = 0; j < gray.length; i += 4, j++) {
+        gray[j] = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+      }
+
+      const pts = tracker.push_frame(gray); // [x, y, status, ...]
+
+      // Overlay the tracked points on top of the (already drawn) frame.
+      for (let k = 0; k < pts.length; k += 3) {
+        const x = pts[k], y = pts[k + 1];
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, Math.PI * 2);
+        ctx.fillStyle = "#22d3ee";
+        ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = "#0008"; ctx.stroke();
+      }
+
+      frames++;
+      const now = performance.now();
+      if (now - lastT >= 500) {
+        fps = Math.round((frames * 1000) / (now - lastT));
+        frames = 0; lastT = now;
+      }
+      stat.textContent = `${PW}x${PH} · ${tracker.count()} pts · ${fps} fps`;
+
+      requestAnimationFrame(() => loop(video));
+    }
+
+    main();
+  </script>
+</body>
+</html>
