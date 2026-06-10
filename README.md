@@ -36,3 +36,27 @@ let prev_points: Vec<(f32, f32)> = points.iter().map(|&x| (x.0 as f32, x.1 as f3
 
 let next_points = calc_optical_flow(&prev_frame_pyr, &next_frame_pyr, &prev_points, 21, 30);
 ```
+
+## WebAssembly
+
+The Scharr gradient kernel has a hand-written `simd128` path that is selected
+automatically on `wasm32` — **but only when the target is built with SIMD
+enabled**, since WASM has no runtime feature detection. The bundled
+[`.cargo/config.toml`](.cargo/config.toml) sets this for you:
+
+```toml
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
+```
+
+If you build from a different working directory (so that config is not picked
+up), pass it yourself:
+
+```bash
+RUSTFLAGS="-C target-feature=+simd128" cargo build --release --target wasm32-unknown-unknown
+```
+
+Without `+simd128` the crate still works, falling back to a scalar gradient
+loop. For production WASM, also run `wasm-opt -O3` on the output. On a 640×480
+per-frame track step, the simd128 build plus the bounds-check-free bilinear
+sampler is roughly **2× faster** than the scalar build in V8 (Node).

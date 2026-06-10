@@ -205,20 +205,30 @@ fn compute_gradient_products(
     gx: &ImageBuffer<Luma<i16>, Vec<i16>>,
     gy: &ImageBuffer<Luma<i16>, Vec<i16>>,
 ) -> GradientProduct {
-    let mut ix_sq: ImageBuffer<Luma<i16>, Vec<i16>> = ImageBuffer::new(gx.width(), gx.height());
-    let mut iy_sq: ImageBuffer<Luma<i16>, Vec<i16>> = ImageBuffer::new(gx.width(), gx.height());
-    let mut ix_iy: ImageBuffer<Luma<i16>, Vec<i16>> = ImageBuffer::new(gx.width(), gx.height());
+    let (width, height) = gx.dimensions();
+    let gx_data = gx.as_raw();
+    let gy_data = gy.as_raw();
+    let n = gx_data.len();
 
-    for ((x, y, gx_val), gy_val) in gx.enumerate_pixels().zip(gy.pixels()) {
-        let ix = gx_val[0];
-        let iy = gy_val[0];
+    // Build the three product planes as flat buffers, avoiding per-pixel
+    // bounds-checked `put_pixel` (a noticeable win under WASM).
+    let mut ix_sq = vec![0i16; n];
+    let mut iy_sq = vec![0i16; n];
+    let mut ix_iy = vec![0i16; n];
 
-        ix_sq.put_pixel(x, y, Luma([(ix / 32 * (ix / 32))]));
-        iy_sq.put_pixel(x, y, Luma([(iy / 32 * (iy / 32))]));
-        ix_iy.put_pixel(x, y, Luma([(ix / 32 * (iy / 32))]));
+    for i in 0..n {
+        let ix = gx_data[i] / 32;
+        let iy = gy_data[i] / 32;
+        ix_sq[i] = ix * ix;
+        iy_sq[i] = iy * iy;
+        ix_iy[i] = ix * iy;
     }
 
-    (ix_sq, iy_sq, ix_iy)
+    (
+        ImageBuffer::from_vec(width, height, ix_sq).unwrap(),
+        ImageBuffer::from_vec(width, height, iy_sq).unwrap(),
+        ImageBuffer::from_vec(width, height, ix_iy).unwrap(),
+    )
 }
 
 fn compute_min_eigenvalues(
@@ -226,20 +236,22 @@ fn compute_min_eigenvalues(
     b: &ImageBuffer<Luma<i16>, Vec<i16>>,
     c: &ImageBuffer<Luma<i16>, Vec<i16>>,
 ) -> Vec<(u32, u32, f32)> {
-    let mut features = Vec::with_capacity((a.width() * a.height()) as usize);
+    let width = a.width();
+    let (a_data, b_data, c_data) = (a.as_raw(), b.as_raw(), c.as_raw());
+    let mut features = Vec::with_capacity(a_data.len());
 
-    for y in 0..a.height() {
-        for x in 0..a.width() {
-            let a_val = a.get_pixel(x, y)[0] as i32;
-            let b_val = b.get_pixel(x, y)[0] as i32;
-            let c_val = c.get_pixel(x, y)[0] as i32;
+    for i in 0..a_data.len() {
+        let a_val = a_data[i] as i32;
+        let b_val = b_data[i] as i32;
+        let c_val = c_data[i] as i32;
 
-            let trace = a_val + b_val;
-            let discriminant = (a_val - b_val).pow(2) + 4 * c_val.pow(2);
-            let min_eigen = (((trace - discriminant) as f32).sqrt()) / 2.0;
+        let trace = a_val + b_val;
+        let discriminant = (a_val - b_val).pow(2) + 4 * c_val.pow(2);
+        let min_eigen = (((trace - discriminant) as f32).sqrt()) / 2.0;
 
-            features.push((x, y, min_eigen));
-        }
+        let x = i as u32 % width;
+        let y = i as u32 / width;
+        features.push((x, y, min_eigen));
     }
 
     features

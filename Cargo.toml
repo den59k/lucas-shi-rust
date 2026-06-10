@@ -10,6 +10,14 @@ documentation = "https://docs.rs/optical-flow-lk"
 keywords = ["optical-flow", "tracking", "computer-vision", "feature-detection", "visual-odometry"]
 categories = ["computer-vision", "algorithms", "science"]
 
+# Release builds (including the wasm32 artifact) get full optimization. `lto`
+# and a single codegen unit matter especially for WASM, where they let the
+# inliner collapse the SIMD/interpolation hot paths.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+
 [dependencies]
 image = "0.25.10"
 nalgebra = "0.34.1"

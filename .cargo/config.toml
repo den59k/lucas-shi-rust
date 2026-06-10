@@ -1,0 +1,9 @@
+# WASM SIMD (simd128) is not in the default wasm32 feature set and has no
+# runtime detection, so it must be enabled at compile time. With this flag the
+# `compute_gradients_into` simd128 path is selected automatically when building
+# for wasm32; without it the crate falls back to the scalar gradient loop.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
+
+[target.wasm32-wasip1]
+rustflags = ["-C", "target-feature=+simd128"]

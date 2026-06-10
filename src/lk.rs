@@ -536,20 +536,53 @@ fn in_bounds(img: &GrayImage, x: f32, y: f32, radius: usize) -> bool {
 
 /// Bilinear interpolation of the pixel value
 fn interpolate(img: &GrayImage, x: f32, y: f32) -> f32 {
+    let w = img.width() as i32;
+    let h = img.height() as i32;
     let x0 = x.floor() as i32;
     let y0 = y.floor() as i32;
-    let x1 = x0 + 1;
-    let y1 = y0 + 1;
 
     let dx = x - x0 as f32;
     let dy = y - y0 as f32;
 
+    let data = img.as_raw();
+
+    // Fast path: the full 2x2 footprint is inside the image, so all four reads
+    // are provably in bounds. This is the overwhelmingly common case in the LK
+    // loop (the window is bounds-checked before sampling), and it avoids the
+    // per-sample `Option`/branch machinery of `get_pixel_checked` — the single
+    // hottest cost in tracking, and especially expensive under WASM where
+    // bounds checks are not elided.
+    if x0 >= 0 && y0 >= 0 && x0 + 1 < w && y0 + 1 < h {
+        let stride = w as usize;
+        let base = y0 as usize * stride + x0 as usize;
+        // SAFETY: x0>=0, y0>=0, x0+1<w, y0+1<h proven above, and the buffer is
+        // exactly w*h long, so base, base+1, base+stride, base+stride+1 are all
+        // valid indices.
+        let (p00, p10, p01, p11) = unsafe {
+            (
+                *data.get_unchecked(base) as f32,
+                *data.get_unchecked(base + 1) as f32,
+                *data.get_unchecked(base + stride) as f32,
+                *data.get_unchecked(base + stride + 1) as f32,
+            )
+        };
+        // Same term order as the slow path below for bit-identical results.
+        return p00 * (1.0 - dx) * (1.0 - dy)
+            + p01 * (1.0 - dx) * dy
+            + p10 * dx * (1.0 - dy)
+            + p11 * dx * dy;
+    }
+
+    // Slow path: replicate the zero-padded out-of-bounds behavior at the border.
+    let x1 = x0 + 1;
+    let y1 = y0 + 1;
     let mut sum = 0.0;
     for (sx, sy) in &[(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
-        let px = img
-            .get_pixel_checked(*sx as u32, *sy as u32)
-            .map(|p| p[0] as f32)
-            .unwrap_or(0.0);
+        let px = if *sx >= 0 && *sy >= 0 && *sx < w && *sy < h {
+            data[*sy as usize * w as usize + *sx as usize] as f32
+        } else {
+            0.0
+        };
 
         let wx = if sx == &x0 { 1.0 - dx } else { dx };
         let wy = if sy == &y0 { 1.0 - dy } else { dy };
@@ -563,18 +596,39 @@ fn interpolate(img: &GrayImage, x: f32, y: f32) -> f32 {
 /// Bilinear interpolation over a raw `i16` gradient buffer (`width * height`,
 /// row-major). Out-of-bounds samples read as 0, matching [`interpolate`].
 fn interpolate_i16(data: &[i16], width: u32, height: u32, x: f32, y: f32) -> f32 {
+    let w = width as i32;
+    let h = height as i32;
     let x0 = x.floor() as i32;
     let y0 = y.floor() as i32;
-    let x1 = x0 + 1;
-    let y1 = y0 + 1;
 
     let dx = x - x0 as f32;
     let dy = y - y0 as f32;
 
+    // Fast path: full 2x2 footprint in bounds (see `interpolate`).
+    if x0 >= 0 && y0 >= 0 && x0 + 1 < w && y0 + 1 < h {
+        let stride = width as usize;
+        let base = y0 as usize * stride + x0 as usize;
+        // SAFETY: footprint proven in bounds and `data` is width*height long.
+        let (p00, p10, p01, p11) = unsafe {
+            (
+                *data.get_unchecked(base) as f32,
+                *data.get_unchecked(base + 1) as f32,
+                *data.get_unchecked(base + stride) as f32,
+                *data.get_unchecked(base + stride + 1) as f32,
+            )
+        };
+        return p00 * (1.0 - dx) * (1.0 - dy)
+            + p01 * (1.0 - dx) * dy
+            + p10 * dx * (1.0 - dy)
+            + p11 * dx * dy;
+    }
+
+    let x1 = x0 + 1;
+    let y1 = y0 + 1;
     let mut sum = 0.0;
     for (sx, sy) in &[(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
-        let px = if *sx >= 0 && *sy >= 0 && (*sx as u32) < width && (*sy as u32) < height {
-            data[(*sy as u32 * width + *sx as u32) as usize] as f32
+        let px = if *sx >= 0 && *sy >= 0 && *sx < w && *sy < h {
+            data[*sy as usize * width as usize + *sx as usize] as f32
         } else {
             0.0
         };
