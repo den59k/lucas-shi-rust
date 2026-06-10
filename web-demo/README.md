@@ -1,25 +1,31 @@
 # Optical-flow web demo
 
 A tiny in-browser demo of the Lucas-Kanade tracker. Point your phone's camera at
-a scene, **tap to drop a point**, and watch it ride the optical flow as the scene
-(or the camera) moves. Everything runs client-side in WebAssembly — no server,
-no upload.
+a scene, **tap to drop a point** (or hit **Auto** to detect Shi-Tomasi corners),
+and watch the points ride the optical flow as the scene (or the camera) moves.
+Everything runs client-side in WebAssembly — no server, no upload.
+
+**▶ Live: [lk-demo.jt3.ru](https://lk-demo.jt3.ru)**
 
 ```
 web-demo/
-├── index.html        # the whole UI (camera + canvas + tap handling)
+├── index.html        # the whole UI (camera + canvas + tap/Auto handling)
 ├── src/lib.rs        # wasm-bindgen wrapper around TrackerContext
-├── pkg/              # built wasm + JS glue (committed so it deploys as static files)
-└── build.sh / .ps1   # rebuild pkg/ with wasm-pack
+├── pkg/              # built wasm + JS glue (build output; not committed)
+└── build.sh / .ps1   # build pkg/ with wasm-pack
 ```
 
 ## Run locally
+
+First build the wasm package (see [Rebuild the wasm](#rebuild-the-wasm) below),
+which produces `pkg/`. Then serve the folder.
 
 Camera access (`getUserMedia`) only works in a **secure context**: HTTPS, or
 `http://localhost`. Any static file server over localhost works:
 
 ```bash
 cd web-demo
+./build.sh                 # or ./build.ps1 on Windows
 python -m http.server 8080
 # then open http://localhost:8080
 ```
@@ -30,18 +36,21 @@ use a tunneling tool that provides HTTPS (e.g. `cloudflared tunnel`, `ngrok`).
 
 ## Deploy (so you can open it on your phone)
 
-`pkg/` is committed, so the folder is fully static — drop it on any HTTPS host:
+Build `pkg/` first, then publish the static files (`index.html` + `pkg/`) to any
+HTTPS host:
 
-- **GitHub Pages**: push the repo, enable Pages, point it at this folder (or copy
-  `web-demo/` to the Pages root). Open the `https://…/web-demo/` URL on your phone.
-- **Netlify / Vercel / Cloudflare Pages**: set the publish/output directory to
-  `web-demo`. No build step is required because `pkg/` is prebuilt.
+- **Your own server / nginx** (as at [lk-demo.jt3.ru](https://lk-demo.jt3.ru)):
+  copy `index.html` and `pkg/` to the web root. Make sure `.wasm` is served as
+  `application/wasm` (nginx: `types { application/wasm wasm; }` or add to
+  `mime.types`).
+- **GitHub Pages / Netlify / Vercel / Cloudflare Pages**: run `wasm-pack` as the
+  build step (or commit `pkg/`) and set the publish directory to `web-demo`.
 
 Then open the deployed URL on your phone, allow the camera, and tap the video.
 
 ## Rebuild the wasm
 
-Only needed if you change `src/lib.rs` or the library:
+Needed before the first run, and whenever you change `src/lib.rs` or the library:
 
 ```bash
 cd web-demo
@@ -58,6 +67,10 @@ canvas (longer side ≈ 360 px, chosen for real-time speed), converts it to
 grayscale, and hands the bytes to `Tracker.push_frame`. The Rust side keeps the
 previous frame, runs pyramidal Lucas-Kanade for every point, drops points that
 leave the frame or fail to converge, and returns the survivors to be drawn.
+
+The **Auto** button calls `Tracker.auto_detect`, which runs grid-based
+Shi-Tomasi (`good_features_to_track_grid`) on the latest frame to add strong
+corners spread uniformly across the image, kept clear of points already tracked.
 
 Tracker parameters (pyramid levels, window size, iterations) are set in
 [`src/lib.rs`](src/lib.rs) and tuned for phones; adjust there and rebuild.

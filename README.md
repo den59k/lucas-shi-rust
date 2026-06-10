@@ -37,6 +37,16 @@ let prev_points: Vec<(f32, f32)> = points.iter().map(|&x| (x.0 as f32, x.1 as f3
 let next_points = calc_optical_flow(&prev_frame_pyr, &next_frame_pyr, &prev_points, 21, 30);
 ```
 
+## Live demo
+
+A browser demo runs the tracker entirely client-side in WebAssembly: point your
+phone's camera at a scene and tap to drop points (or hit **Auto** to detect
+Shi-Tomasi corners) and watch them ride the optical flow.
+
+**▶ [lk-demo.jt3.ru](https://lk-demo.jt3.ru)**
+
+Source and build instructions are in [`web-demo/`](web-demo/).
+
 ## WebAssembly
 
 The Scharr gradient kernel has a hand-written `simd128` path that is selected

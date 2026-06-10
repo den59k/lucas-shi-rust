@@ -3,7 +3,9 @@
 //! frame and advances every point along the optical flow.
 
 use image::{GrayImage, ImageBuffer};
-use optical_flow_lk::{TrackStatus, TrackerContext, DEFAULT_MIN_EIGEN_THRESHOLD};
+use optical_flow_lk::{
+    good_features_to_track_grid, TrackStatus, TrackerContext, DEFAULT_MIN_EIGEN_THRESHOLD,
+};
 use wasm_bindgen::prelude::*;
 
 /// Status codes mirrored into the flattened JS output (`[x, y, status, ...]`).
@@ -49,6 +51,39 @@ impl Tracker {
     /// Removes all tracked points.
     pub fn clear(&mut self) {
         self.points.clear();
+    }
+
+    /// Detects strong Shi-Tomasi corners on the most recent frame and adds them
+    /// to the tracked set, spread uniformly over a grid and kept clear of points
+    /// already being tracked. Call it repeatedly to top up after points are
+    /// lost. Returns the new total point count. No-op until a frame has arrived.
+    pub fn auto_detect(&mut self) -> usize {
+        // Heuristics scaled to the processing resolution: ~64px grid cells, a
+        // couple of corners per cell, spacing of roughly width/24 pixels.
+        let cols = (self.width / 64).max(1);
+        let rows = (self.height / 64).max(1);
+        let min_distance = (self.width.min(self.height) / 24).max(6);
+        let quality = 0.05;
+        let max_per_cell = 2;
+
+        let existing = self.points.clone();
+        let feats = match self.prev.as_ref() {
+            Some(prev) => good_features_to_track_grid(
+                prev,
+                cols,
+                rows,
+                max_per_cell,
+                quality,
+                min_distance,
+                &existing,
+            ),
+            None => return self.points.len(),
+        };
+
+        for (x, y, _q) in feats {
+            self.points.push((x as f32, y as f32));
+        }
+        self.points.len()
     }
 
     /// Number of points currently being tracked.
