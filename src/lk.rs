@@ -25,7 +25,15 @@ pub enum TrackStatus {
     /// The minimum eigenvalue of the spatial gradient matrix fell below the
     /// configured threshold, i.e. the window is too flat to track reliably.
     LowTexture,
+    /// The point was tracked forward, but re-tracking it back to the previous
+    /// frame did not return close enough to the original position. Only
+    /// produced by [`calc_optical_flow_fb`]. A strong occlusion/outlier signal.
+    FbInconsistent,
 }
+
+/// Default forward-backward round-trip threshold (pixels) for
+/// [`calc_optical_flow_fb`].
+pub const DEFAULT_FB_THRESHOLD: f32 = 0.7;
 
 /// Per-point result of [`calc_optical_flow_ex`].
 ///
@@ -293,6 +301,88 @@ pub fn calc_optical_flow_ex(
             }
         })
         .collect()
+}
+
+/// Track points prev->next, then re-track the results next->prev, and flag any
+/// point whose round-trip lands further than `fb_threshold` pixels from where it
+/// started as [`TrackStatus::FbInconsistent`].
+///
+/// This is the standard forward-backward consistency check and is the cheapest
+/// reliable way to reject occlusions and ambiguous matches before they poison a
+/// downstream pose solve. Points that already failed the forward pass keep their
+/// forward status (the round-trip is only evaluated for forward-tracked points).
+///
+/// Both passes reuse the supplied pyramids. The free-function form still
+/// allocates its result vectors internally; for a fully allocation-free
+/// steady-state call, use the equivalent [`TrackerContext`] method.
+///
+/// # Arguments
+/// * `prev_pyramid` / `next_pyramid` - frame pyramids (shared by both passes)
+/// * `prev_points` - points to track (level-0 coordinates)
+/// * `predicted` - optional initial guess for the forward pass, see
+///   [`calc_optical_flow_ex`]
+/// * `window_size`, `max_iterations`, `min_eigen_threshold` - as in
+///   [`calc_optical_flow_ex`]
+/// * `fb_threshold` - maximum allowed round-trip distance in pixels; see
+///   [`DEFAULT_FB_THRESHOLD`]
+#[allow(clippy::too_many_arguments)]
+pub fn calc_optical_flow_fb(
+    prev_pyramid: &[GrayImage],
+    next_pyramid: &[GrayImage],
+    prev_points: &[(f32, f32)],
+    predicted: Option<&[(f32, f32)]>,
+    window_size: usize,
+    max_iterations: usize,
+    min_eigen_threshold: f32,
+    fb_threshold: f32,
+) -> Vec<TrackResult> {
+    let mut forward = calc_optical_flow_ex(
+        prev_pyramid,
+        next_pyramid,
+        prev_points,
+        predicted,
+        window_size,
+        max_iterations,
+        min_eigen_threshold,
+    );
+
+    let forward_pos: Vec<(f32, f32)> = forward.iter().map(|r| r.pos).collect();
+    let backward = calc_optical_flow_ex(
+        next_pyramid,
+        prev_pyramid,
+        &forward_pos,
+        None,
+        window_size,
+        max_iterations,
+        min_eigen_threshold,
+    );
+
+    mark_fb_inconsistent(&mut forward, &backward, prev_points, fb_threshold);
+    forward
+}
+
+/// Flag forward-tracked points whose backward round-trip exceeds the threshold.
+/// Factored out so the [`TrackerContext`] path can reuse it without allocating.
+fn mark_fb_inconsistent(
+    forward: &mut [TrackResult],
+    backward: &[TrackResult],
+    prev_points: &[(f32, f32)],
+    fb_threshold: f32,
+) {
+    let threshold_sq = fb_threshold * fb_threshold;
+    for (idx, result) in forward.iter_mut().enumerate() {
+        // Only forward-tracked points are eligible; others keep their status.
+        if result.status != TrackStatus::Tracked {
+            continue;
+        }
+
+        let back = &backward[idx];
+        let dx = back.pos.0 - prev_points[idx].0;
+        let dy = back.pos.1 - prev_points[idx].1;
+        if back.status != TrackStatus::Tracked || dx * dx + dy * dy > threshold_sq {
+            result.status = TrackStatus::FbInconsistent;
+        }
+    }
 }
 
 /// Minimum eigenvalue of the symmetric 2x2 matrix `[[a, b], [b, c]]`.
