@@ -1,5 +1,8 @@
 use image::{ImageBuffer, Luma};
 
+/// Largest input magnitude for which a full 3x3 sum cannot overflow i32.
+const MAX_BOX_SUM_INPUT: i32 = i32::MAX / 9;
+
 /// Centered separable 3x3 sum without allocating or dividing. Boundaries include
 /// only available samples; the caller normalizes by their count when needed.
 /// Inputs must have magnitude <= i32::MAX / 9 so both passes fit in i32.
@@ -8,6 +11,13 @@ pub fn box_sum_3x3_in_place(image: &mut ImageBuffer<Luma<i32>, Vec<i32>>) {
     if image.width() == 0 || image.height() == 0 {
         return;
     }
+    // Release builds would wrap silently on overflow; catch violations in debug.
+    debug_assert!(
+        image
+            .iter()
+            .all(|&v| v.unsigned_abs() <= MAX_BOX_SUM_INPUT.unsigned_abs()),
+        "box_sum_3x3_in_place input exceeds i32::MAX / 9"
+    );
     // Accumulate each dimension once; normalization is deferred to the score.
     box_sum_horizontal_3x3_in_place(image);
     box_sum_vertical_3x3_in_place(image);
@@ -127,5 +137,22 @@ mod tests {
         assert_eq!(image.get_pixel(1, 1)[0], 149_817_600);
         assert_eq!(image.get_pixel(0, 0)[0], 4 * product);
         assert_eq!(image.get_pixel(1, 0)[0], 6 * product);
+    }
+
+    #[test]
+    fn largest_permitted_inputs_do_not_overflow() {
+        for value in [MAX_BOX_SUM_INPUT, -MAX_BOX_SUM_INPUT] {
+            let mut image = ImageBuffer::from_pixel(3, 3, Luma([value]));
+            box_sum_3x3_in_place(&mut image);
+            assert_eq!(image.get_pixel(1, 1)[0], 9 * value);
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "exceeds i32::MAX / 9")]
+    fn out_of_range_input_is_rejected_in_debug_builds() {
+        let mut image = ImageBuffer::from_pixel(3, 3, Luma([MAX_BOX_SUM_INPUT + 1]));
+        box_sum_3x3_in_place(&mut image);
     }
 }
