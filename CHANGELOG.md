@@ -26,6 +26,14 @@
   [RUSTSEC-2026-0116](https://rustsec.org/advisories/RUSTSEC-2026-0116.html), and
   [RUSTSEC-2026-0117](https://rustsec.org/advisories/RUSTSEC-2026-0117.html).
 
+### Benchmarks
+
+- Add a low-contrast detection case and a Node WASI runner for the same Criterion
+  harness. WASM uses sequential statistical analysis without worker threads;
+  native Criterion features remain unchanged.
+- Upgrade Criterion from 0.5.1 to 0.8.2 for native and WASM benchmarks. Existing
+  recorded comparisons used 0.5.1 on both revisions and retain that provenance.
+
 Public API signatures and LK tracking are unchanged. Detected positions and
 scores can change as a consequence of these corrections; existing detection
 thresholds may need retuning. The score normalization is preserved, but eliminating

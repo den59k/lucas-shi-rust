@@ -120,6 +120,16 @@ fn bench_features(c: &mut Criterion) {
             image: texture(640, 480),
         },
         Case {
+            name: "low_contrast_320x240",
+            image: {
+                let mut image = texture(320, 240);
+                for pixel in image.pixels_mut() {
+                    pixel[0] /= 64;
+                }
+                image
+            },
+        },
+        Case {
             name: "flat_640x480",
             image: GrayImage::from_pixel(640, 480, Luma([127])),
         },
