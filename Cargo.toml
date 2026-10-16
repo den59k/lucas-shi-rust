@@ -47,3 +47,7 @@ harness = false
 [[bench]]
 name = "features"
 harness = false
+
+[[bench]]
+name = "feature_stages"
+harness = false

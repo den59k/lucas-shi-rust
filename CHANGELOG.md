@@ -33,6 +33,9 @@
   native Criterion features remain unchanged.
 - Upgrade Criterion from 0.5.1 to 0.8.2 for native and WASM benchmarks. Existing
   recorded comparisons used 0.5.1 on both revisions and retain that provenance.
+- Measure detector stages and intermediate candidate counts separately, including
+  an equal-input selection control and benchmark-only explicit score-floor/NMS
+  experiments. Record native and WASI results without changing production code.
 
 Public API signatures and LK tracking are unchanged. Detected positions and
 scores can change as a consequence of these corrections; existing detection

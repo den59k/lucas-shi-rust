@@ -63,3 +63,59 @@ Cargo prints the generated `.wasm` path. Use `--test --noplot` instead of
 revision comparisons. Build both revisions with identical dependencies and the
 same harness. WASI timing here describes Node/V8 on the host; browser runtimes
 and devices can have different performance.
+
+## Stage costs and explicit selection
+
+`cargo +stable bench --locked --bench feature_stages` measures gradients,
+products, tensor filtering, scores, NMS, quality filtering, sorting, spacing,
+and the whole plain detector separately. `-- --test --noplot` runs assertions
+and candidate counts without statistical timing. The harness includes the real
+private detector functions inside the benchmark binary; the library API and
+implementation are unchanged. Its reconstructed output must equal the public
+detector output exactly for every input.
+
+Destructive stages use Criterion `iter_batched` with `PerIteration`: input
+cloning and returned-buffer destruction occur outside timing. Allocating stages
+using `iter` include output destruction. Stages therefore do not sum exactly to
+whole-call time: setup changes cache state, timer overhead differs, and buffer
+lifetimes differ. Stage measurements describe costs on their stated inputs,
+not a causal decomposition obtained by subtracting times.
+
+`controlled/*` supplies the same deterministic synthetic dense scores and the
+same resulting candidate lists to both revisions. Input/output fingerprints
+and lengths are recorded. This separates selection cost at equal workload from
+selection cost on each detector's actual, potentially different responses.
+The synthetic fixture is a workload control, not a detector-quality dataset.
+
+The `FLOOR` records sweep absolute thresholds of 0, 0.01, 0.1, 1, 4, and 16
+in `(grey levels / pixel)^2`, combined with the existing relative threshold by
+`max(absolute, 0.05 * maximum_after_NMS)`. These are exploratory values, not
+recommended defaults. They report eligible score pixels (including borders),
+qualified local maxima, and final spaced points. A score measures gradient
+structure, not the probability that a feature is useful for tracking.
+
+Two benchmark-only NMS variants reject scores below a supplied threshold before
+checking neighbors, retaining the original neighbor scores and production tie
+behavior. Every threshold's result is asserted equal to normal NMS followed by
+that threshold. The relative threshold is obtained from an untimed reference
+NMS; its discovery cost is **not** included in these screening measurements.
+Consequently, their speedup is a stage-level opportunity, not an implemented
+whole-detector speedup. A production implementation must explicitly define how
+it obtains the relative maximum, especially when boundary scores exceed interior
+scores. Absolute thresholds alone do not have that dependency.
+
+For a reproducible native/WASI comparison against the pre-precision revision:
+
+```sh
+python3 benches/compare-feature-stages.py 0ff69b9 /absolute/path/to/new-run-directory
+```
+
+The script creates a temporary baseline source tree, overlays the current
+manifest, lockfile and benchmarks, and adapts only two names in the benchmark
+access wrapper to the old private function names. Historical library sources
+stay unchanged. It builds separate binaries, runs parity assertions, then
+alternates before/after per input with no concurrent timed jobs. Both sides use
+Criterion 0.8.2, 30 samples, 0.3 s warm-up, 1 s target measurement and 10,000
+bootstrap resamples. JSON results retain means and 95% confidence intervals,
+counts, source/binary hashes and environment information. All dependency builds
+are offline, so dependencies and the WASI target must already be installed.
