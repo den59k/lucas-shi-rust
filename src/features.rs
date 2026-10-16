@@ -1,7 +1,7 @@
 use image::{GrayImage, ImageBuffer, Luma};
 use std::cmp::Ordering;
 
-use crate::utils::{box_filter_3x3::box_filter_3x3_in_place, fast_gradients::compute_gradients};
+use crate::utils::{box_filter_3x3::box_sum_3x3_in_place, fast_gradients::compute_gradients};
 
 /// Finds good features points using the Shi-Tomasi algorithm
 ///
@@ -15,8 +15,9 @@ use crate::utils::{box_filter_3x3::box_filter_3x3_in_place, fast_gradients::comp
 /// `(x, y, min_eigenvalue)` tuples sorted by descending quality; equal scores
 /// retain row-major order. Only finite, positive scores are returned. Flat
 /// images and images narrower or shorter than three pixels yield no features.
-/// Scores use Scharr gradients divided by 32 with integer truncation, followed
-/// by a separable 3x3 average with integer truncation after each pass.
+/// Scores are eigenvalues of the mean 3x3 gradient tensor, using Scharr gradients
+/// normalized by 32, in (grey levels / pixel)^2. Raw products and window
+/// sums are accumulated exactly; normalization occurs once, at the final score.
 pub fn good_features_to_track(
     image: &GrayImage,
     quality_level: f32,
@@ -124,13 +125,14 @@ fn detect_candidates(image: &GrayImage, quality_level: f32) -> Vec<(u32, u32, f3
     // Compute squared gradients and their product
     let (mut ix_sq, mut iy_sq, mut ix_iy) = compute_gradient_products(&gx, &gy);
 
-    // Smooth with 3x3 filters
-    box_filter_3x3_in_place(&mut ix_sq);
-    box_filter_3x3_in_place(&mut iy_sq);
-    box_filter_3x3_in_place(&mut ix_iy);
+    // Sum without division; min_eigenvalue_scores applies the mean and
+    // Scharr normalization together, preserving fractional gradient responses.
+    box_sum_3x3_in_place(&mut ix_sq);
+    box_sum_3x3_in_place(&mut iy_sq);
+    box_sum_3x3_in_place(&mut ix_iy);
 
     // Compute minimum eigenvalues
-    let mut features = compute_min_eigenvalues(&ix_sq, &iy_sq, &ix_iy);
+    let mut features = min_eigenvalue_scores(&ix_sq, &iy_sq, &ix_iy);
 
     // Non-maximum suppression
     non_maximum_suppression(&mut features, image.width(), image.height());
@@ -209,9 +211,9 @@ impl OccupancyGrid {
 }
 
 type GradientProduct = (
-    ImageBuffer<Luma<i16>, Vec<i16>>,
-    ImageBuffer<Luma<i16>, Vec<i16>>,
-    ImageBuffer<Luma<i16>, Vec<i16>>,
+    ImageBuffer<Luma<i32>, Vec<i32>>,
+    ImageBuffer<Luma<i32>, Vec<i32>>,
+    ImageBuffer<Luma<i32>, Vec<i32>>,
 );
 
 fn compute_gradient_products(
@@ -225,13 +227,16 @@ fn compute_gradient_products(
 
     // Build the three product planes as flat buffers, avoiding per-pixel
     // bounds-checked `put_pixel` (a noticeable win under WASM).
-    let mut ix_sq = vec![0i16; n];
-    let mut iy_sq = vec![0i16; n];
-    let mut ix_iy = vec![0i16; n];
+    let mut ix_sq = vec![0i32; n];
+    let mut iy_sq = vec![0i32; n];
+    let mut ix_iy = vec![0i32; n];
 
+    // For u8 images, |Scharr| <= 4080: products <= 16_646_400 and 3x3
+    // sums <= 149_817_600 fit in i32. Deferring the /32 normalization avoids
+    // discarding sub-grey-level gradients before squaring them.
     for i in 0..n {
-        let ix = gx_data[i] / 32;
-        let iy = gy_data[i] / 32;
+        let ix = gx_data[i] as i32;
+        let iy = gy_data[i] as i32;
         ix_sq[i] = ix * ix;
         iy_sq[i] = iy * iy;
         ix_iy[i] = ix * iy;
@@ -244,36 +249,45 @@ fn compute_gradient_products(
     )
 }
 
-fn compute_min_eigenvalues(
-    a: &ImageBuffer<Luma<i16>, Vec<i16>>,
-    b: &ImageBuffer<Luma<i16>, Vec<i16>>,
-    c: &ImageBuffer<Luma<i16>, Vec<i16>>,
+fn min_eigenvalue_scores(
+    a: &ImageBuffer<Luma<i32>, Vec<i32>>,
+    b: &ImageBuffer<Luma<i32>, Vec<i32>>,
+    c: &ImageBuffer<Luma<i32>, Vec<i32>>,
 ) -> Vec<(u32, u32, f32)> {
-    let width = a.width();
+    let (width, height) = a.dimensions();
     let (a_data, b_data, c_data) = (a.as_raw(), b.as_raw(), c.as_raw());
     let mut features = Vec::with_capacity(a_data.len());
 
     for i in 0..a_data.len() {
-        // Use f64 intermediates to reduce cancellation when the trace and the
-        // discriminant's square root nearly coincide (strongly oriented
-        // gradients). This is for accuracy, not overflow prevention: the
-        // current 8-bit tensor components have magnitude <= 16_129, and even
-        // the discriminant fits in i32. Keep the public score type as f32.
-        let a_val = a_data[i] as f64;
-        let b_val = b_data[i] as f64;
-        let c_val = c_data[i] as f64;
-
-        // Integer gradient/filter rounding can make the tensor slightly
-        // indefinite; clamp negative eigenvalues to a zero corner response.
-        let discriminant_sqrt = ((a_val - b_val).powi(2) + 4.0 * c_val.powi(2)).sqrt();
-        let min_eigen = ((a_val + b_val - discriminant_sqrt) * 0.5).max(0.0) as f32;
-
         let x = i as u32 % width;
         let y = i as u32 / width;
+        let cols = 1 + u32::from(x > 0) + u32::from(x + 1 < width);
+        let rows = 1 + u32::from(y > 0) + u32::from(y + 1 < height);
+        // Eigenvalues scale linearly with a common tensor scale. Divide once
+        // by Scharr gain squared and the actual sample count, including edges.
+        let normalization = (32 * 32 * cols * rows) as f64;
+        let min_eigen =
+            (tensor_min_eigenvalue(a_data[i], b_data[i], c_data[i]) / normalization) as f32;
         features.push((x, y, min_eigen));
     }
 
     features
+}
+
+/// Small eigenvalue of [[a, c], [c, b]], for summed gradient products.
+fn tensor_min_eigenvalue(a: i32, b: i32, c: i32) -> f64 {
+    // i32 tensor sums can have a discriminant larger than i32. Compute the
+    // determinant exactly in i64 before conversion to f64; det/lambda_max
+    // avoids cancellation in trace - sqrt(discriminant) for nearly rank-one
+    // tensors. Valid u8 tensors have |entry| <= 149_817_600, so i64 is ample.
+    let determinant = a as i64 * b as i64 - c as i64 * c as i64;
+    if determinant <= 0 {
+        return 0.0;
+    }
+    let (a, b, c) = (a as f64, b as f64, c as f64);
+    let discriminant_sqrt = ((a - b).powi(2) + 4.0 * c.powi(2)).sqrt();
+    let largest = (a + b + discriminant_sqrt) * 0.5;
+    determinant as f64 / largest
 }
 
 fn non_maximum_suppression(features: &mut Vec<(u32, u32, f32)>, width: u32, height: u32) {
@@ -363,35 +377,69 @@ mod tests {
             (0, 0, 0, 0.0),
             (16_129, 16_129, 0, 16_129.0),
             (16_129, 16_129, 16_129, 0.0),
-            // Independent integer rounding can make a tensor slightly indefinite.
+            // Clamp indefinite tensors to zero as well.
             (0, 0, 1, 0.0),
         ];
-        let a = ImageBuffer::from_vec(
-            tensors.len() as u32,
-            1,
-            tensors.iter().map(|t| t.0).collect(),
-        )
-        .unwrap();
-        let b = ImageBuffer::from_vec(
-            tensors.len() as u32,
-            1,
-            tensors.iter().map(|t| t.1).collect(),
-        )
-        .unwrap();
-        let c = ImageBuffer::from_vec(
-            tensors.len() as u32,
-            1,
-            tensors.iter().map(|t| t.2).collect(),
-        )
-        .unwrap();
-        let actual = compute_min_eigenvalues(&a, &b, &c);
-        for ((_, _, score), tensor) in actual.iter().zip(tensors) {
+        for tensor in tensors {
+            let score = tensor_min_eigenvalue(tensor.0, tensor.1, tensor.2);
             assert!(score.is_finite());
             assert!(
                 (score - tensor.3).abs() < 1e-5,
                 "wrong score for {tensor:?}"
             );
         }
+    }
+
+    #[test]
+    fn raw_products_preserve_fractional_normalized_gradients_and_extremes() {
+        let gx = ImageBuffer::from_vec(5, 1, vec![1i16, -31, 32, 4080, -4080]).unwrap();
+        let gy = ImageBuffer::from_vec(5, 1, vec![-1i16, 1, 31, -4080, -4080]).unwrap();
+        let (xx, yy, xy) = compute_gradient_products(&gx, &gy);
+        assert_eq!(xx.as_raw(), &[1, 961, 1024, 16_646_400, 16_646_400]);
+        assert_eq!(yy.as_raw(), &[1, 1, 961, 16_646_400, 16_646_400]);
+        assert_eq!(xy.as_raw(), &[-1, -31, 992, -16_646_400, 16_646_400]);
+    }
+
+    #[test]
+    fn normalization_preserves_tensor_mean_at_borders_and_small_dimensions() {
+        for (width, height) in [(1, 1), (1, 5), (5, 1), (2, 2), (3, 3), (7, 9)] {
+            let mut a = ImageBuffer::from_pixel(width, height, Luma([1024]));
+            let mut b = ImageBuffer::from_pixel(width, height, Luma([2048]));
+            let c = ImageBuffer::new(width, height);
+            box_sum_3x3_in_place(&mut a);
+            box_sum_3x3_in_place(&mut b);
+            let scores = min_eigenvalue_scores(&a, &b, &c);
+            assert_eq!(scores.len(), (width * height) as usize);
+            assert!(scores.iter().all(|p| p.2 == 1.0));
+        }
+    }
+
+    #[test]
+    fn fractional_window_mean_is_not_truncated() {
+        let a = ImageBuffer::from_pixel(3, 3, Luma([1]));
+        let b = a.clone();
+        let c = ImageBuffer::new(3, 3);
+        let scores = min_eigenvalue_scores(&a, &b, &c);
+        let expected = 1.0 / (32.0 * 32.0 * 9.0);
+        assert_eq!(scores[4], (1, 1, expected));
+    }
+
+    #[test]
+    fn nearly_rank_one_tensor_keeps_its_small_positive_eigenvalue() {
+        // Outer products of (4080, 4079) and (4079, 4078) have determinant 1.
+        let (a, b, c) = (33_284_641, 33_268_325, 33_276_482);
+        assert_eq!(a as i64 * b as i64 - c as i64 * c as i64, 1);
+        let score = tensor_min_eigenvalue(a, b, c);
+        let expected = 1.0 / (a as f64 + b as f64);
+        assert!((score - expected).abs() <= expected * 1e-14);
+    }
+
+    #[test]
+    fn maximum_product_sum_is_finite_and_rank_one_stays_zero() {
+        let max = 9 * 4080 * 4080;
+        assert_eq!(tensor_min_eigenvalue(max, max, 0), max as f64);
+        assert_eq!(tensor_min_eigenvalue(max, max, max), 0.0);
+        assert_eq!(tensor_min_eigenvalue(max, max, -max), 0.0);
     }
 
     #[test]

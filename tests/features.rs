@@ -11,7 +11,7 @@ fn reference_candidates(image: &GrayImage, quality: f32) -> Vec<Feature> {
     if w < 3 || h < 3 {
         return Vec::new();
     }
-    let mut products = vec![[0i16; 3]; w * h];
+    let mut gradients = vec![[0i32; 2]; w * h];
     let kx = [[-3, 0, 3], [-10, 0, 10], [-3, 0, 3]];
     let ky = [[-3, -10, -3], [0, 0, 0], [3, 10, 3]];
     for y in 1..h - 1 {
@@ -24,43 +24,45 @@ fn reference_candidates(image: &GrayImage, quality: f32) -> Vec<Feature> {
                     gy += value * ky[j][i];
                 }
             }
-            let (gx, gy) = (gx / 32, gy / 32);
-            products[y * w + x] = [(gx * gx) as i16, (gy * gy) as i16, (gx * gy) as i16];
+            gradients[y * w + x] = [gx, gy];
         }
     }
-    // Separate source/destination buffers and integer rounding after each pass
-    // model the existing detector's quantization independently of its filter.
-    let mut horizontal = products.clone();
-    let mut smooth = products.clone();
+    // Independent reference: average normalized f64 outer products directly
+    // over the 2D window, then use nalgebra's eigensolver. The production path
+    // instead sums raw integer products separably and normalizes the eigenvalue.
+    let mut scores = vec![0.0f32; w * h];
     for y in 0..h {
         for x in 0..w {
-            let (lo, hi) = (x.saturating_sub(1), (x + 1).min(w - 1));
-            for plane in 0..3 {
-                let sum: i32 = (lo..=hi).map(|sx| products[y * w + sx][plane] as i32).sum();
-                horizontal[y * w + x][plane] = (sum / (hi - lo + 1) as i32) as i16;
+            let mut tensor = [0.0; 3];
+            let mut count = 0;
+            let mut direction: Option<[i32; 2]> = None;
+            let mut rank_two = false;
+            for sy in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                for sx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                    let [ix, iy] = gradients[sy * w + sx];
+                    if let Some([dx, dy]) = direction {
+                        rank_two |= ix as i64 * dy as i64 != iy as i64 * dx as i64;
+                    } else if ix != 0 || iy != 0 {
+                        direction = Some([ix, iy]);
+                    }
+                    let (gx, gy) = (ix as f64 / 32.0, iy as f64 / 32.0);
+                    for (sum, value) in tensor.iter_mut().zip([gx * gx, gy * gy, gx * gy]) {
+                        *sum += value;
+                    }
+                    count += 1;
+                }
             }
+            // A window of collinear gradient vectors has exactly zero corner
+            // response. Detect that geometrically before the floating-point
+            // eigensolver can turn a rank-one tensor into a tiny positive score.
+            if !rank_two {
+                continue;
+            }
+            let [a, b, c] = tensor.map(|sum| sum / count as f64);
+            let eigenvalues = SymmetricEigen::new(Matrix2::new(a, c, c, b)).eigenvalues;
+            scores[y * w + x] = eigenvalues[0].min(eigenvalues[1]).max(0.0) as f32;
         }
     }
-    for y in 0..h {
-        for x in 0..w {
-            let (lo, hi) = (y.saturating_sub(1), (y + 1).min(h - 1));
-            for plane in 0..3 {
-                let sum: i32 = (lo..=hi)
-                    .map(|sy| horizontal[sy * w + x][plane] as i32)
-                    .sum();
-                smooth[y * w + x][plane] = (sum / (hi - lo + 1) as i32) as i16;
-            }
-        }
-    }
-    let scores: Vec<f32> = smooth
-        .iter()
-        .map(|&[a, b, c]| {
-            let eigenvalues =
-                SymmetricEigen::new(Matrix2::new(a as f64, c as f64, c as f64, b as f64))
-                    .eigenvalues;
-            eigenvalues[0].min(eigenvalues[1]).max(0.0) as f32
-        })
-        .collect();
     let mut candidates = Vec::new();
     for y in 1..h - 1 {
         for x in 1..w - 1 {
@@ -214,4 +216,70 @@ fn checkerboard_corner_is_detected_and_unchanged_by_an_intensity_offset() {
     );
     assert!(features.iter().all(|p| p.2.is_finite() && p.2 > 0.0));
     assert_eq!(features, good_features_to_track(&offset_image, 0.1, 0));
+}
+
+fn checkerboard(contrast: u8, offset: u8) -> GrayImage {
+    GrayImage::from_fn(31, 31, |x, y| {
+        Luma([offset + if (x < 15) == (y < 15) { contrast } else { 0 }])
+    })
+}
+
+#[test]
+fn one_grey_level_contrast_retains_corners_in_both_apis() {
+    let image = checkerboard(1, 127);
+    let plain = good_features_to_track(&image, 0.1, 1);
+    let grid = good_features_to_track_grid(&image, 2, 2, 2, 0.1, 1, &[]);
+    assert_features_match(
+        &plain,
+        &reference_spacing(&reference_candidates(&image, 0.1), 1),
+    );
+    for features in [&plain, &grid] {
+        assert!(
+            features
+                .iter()
+                .any(|&(x, y, _)| { (13..=16).contains(&x) && (13..=16).contains(&y) }),
+            "one-grey-level corner was lost"
+        );
+        assert!(
+            features
+                .iter()
+                .all(|p| p.2.is_finite() && p.2 > 0.0 && p.2 < 1.0)
+        );
+    }
+}
+
+#[test]
+fn scores_scale_with_contrast_squared_without_moving_corners() {
+    let base = good_features_to_track(&checkerboard(1, 0), 0.1, 1);
+    assert!(
+        !base.is_empty(),
+        "contrast scaling requires a detected base corner"
+    );
+    for contrast in [2, 3, 7, 31, 127, 255] {
+        let actual = good_features_to_track(&checkerboard(contrast, 0), 0.1, 1);
+        assert_eq!(actual.len(), base.len());
+        for (feature, original) in actual.iter().zip(&base) {
+            assert_eq!((feature.0, feature.1), (original.0, original.1));
+            let expected = original.2 as f64 * (contrast as f64).powi(2);
+            assert!(
+                (feature.2 as f64 - expected).abs() <= expected * 2e-7,
+                "contrast {contrast}: {feature:?}, expected score {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn low_contrast_detection_is_offset_and_polarity_invariant() {
+    let image = checkerboard(1, 0);
+    let baseline = good_features_to_track(&image, 0.1, 1);
+    assert!(!baseline.is_empty());
+    for offset in [0, 1, 127, 254] {
+        assert_eq!(
+            baseline,
+            good_features_to_track(&checkerboard(1, offset), 0.1, 1)
+        );
+    }
+    let reversed = GrayImage::from_fn(31, 31, |x, y| Luma([255 - image.get_pixel(x, y)[0]]));
+    assert_eq!(baseline, good_features_to_track(&reversed, 0.1, 1));
 }
