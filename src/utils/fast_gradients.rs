@@ -392,19 +392,31 @@ unsafe fn compute_gradients_simd128_into(img: &GrayImage, grad_x: &mut [i16], gr
             };
 
             let gx_lo = i16x8_add(
-                i16x8_mul(i16x8_sub(i16x8_add(tr.0, br.0), i16x8_add(tl.0, bl.0)), coeff3),
+                i16x8_mul(
+                    i16x8_sub(i16x8_add(tr.0, br.0), i16x8_add(tl.0, bl.0)),
+                    coeff3,
+                ),
                 i16x8_mul(i16x8_sub(mr.0, ml.0), coeff10),
             );
             let gx_hi = i16x8_add(
-                i16x8_mul(i16x8_sub(i16x8_add(tr.1, br.1), i16x8_add(tl.1, bl.1)), coeff3),
+                i16x8_mul(
+                    i16x8_sub(i16x8_add(tr.1, br.1), i16x8_add(tl.1, bl.1)),
+                    coeff3,
+                ),
                 i16x8_mul(i16x8_sub(mr.1, ml.1), coeff10),
             );
             let gy_lo = i16x8_add(
-                i16x8_mul(i16x8_sub(i16x8_add(bl.0, br.0), i16x8_add(tl.0, tr.0)), coeff3),
+                i16x8_mul(
+                    i16x8_sub(i16x8_add(bl.0, br.0), i16x8_add(tl.0, tr.0)),
+                    coeff3,
+                ),
                 i16x8_mul(i16x8_sub(bc.0, tc.0), coeff10),
             );
             let gy_hi = i16x8_add(
-                i16x8_mul(i16x8_sub(i16x8_add(bl.1, br.1), i16x8_add(tl.1, tr.1)), coeff3),
+                i16x8_mul(
+                    i16x8_sub(i16x8_add(bl.1, br.1), i16x8_add(tl.1, tr.1)),
+                    coeff3,
+                ),
                 i16x8_mul(i16x8_sub(bc.1, tc.1), coeff10),
             );
 

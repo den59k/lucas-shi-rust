@@ -51,7 +51,7 @@ pub fn build_pyramid_into(image: &GrayImage, levels: usize, pyramid: &mut Vec<Gr
             prev_w as usize,
             new_w as usize,
             new_h as usize,
-            &mut **new_image,
+            new_image,
         );
 
         produced += 1;

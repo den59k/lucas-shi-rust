@@ -1,6 +1,6 @@
 [package]
 name = "optical-flow-lk"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 authors = ["den59k <den59k@gmail.com>", "Claude <noreply@anthropic.com>"]
 description = "Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi feature detection"
@@ -36,4 +36,8 @@ harness = false
 
 [[bench]]
 name = "tracking"
+harness = false
+
+[[bench]]
+name = "features"
 harness = false

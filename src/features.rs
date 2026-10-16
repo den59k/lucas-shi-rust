@@ -7,12 +7,16 @@ use crate::utils::{box_filter_3x3::box_filter_3x3_in_place, fast_gradients::comp
 ///
 /// # Arguments
 /// * `image` - Target image (grayscale)
-/// * `quality_level` - Quality level. 0.4 is a good value
-/// * `min_distance` - Filter points by distance between
+/// * `quality_level` - Minimum fraction of the strongest local corner response
+/// * `min_distance` - Minimum Euclidean spacing in pixels; zero disables spacing
 ///
 ///
 /// # Returns
-/// Vector of features with eigenvalue. Points sorted in descending order of quality
+/// `(x, y, min_eigenvalue)` tuples sorted by descending quality; equal scores
+/// retain row-major order. Only finite, positive scores are returned. Flat
+/// images and images narrower or shorter than three pixels yield no features.
+/// Scores use Scharr gradients divided by 32 with integer truncation, followed
+/// by a separable 3x3 average with integer truncation after each pass.
 pub fn good_features_to_track(
     image: &GrayImage,
     quality_level: f32,
@@ -58,8 +62,14 @@ pub fn good_features_to_track_grid(
 ) -> Vec<(u32, u32, f32)> {
     assert!(grid_cols > 0 && grid_rows > 0, "grid must be non-empty");
 
-    let (width, height) = image.dimensions();
+    if max_per_cell == 0 {
+        return Vec::new();
+    }
     let candidates = detect_candidates(image, quality_level);
+    if candidates.is_empty() {
+        return candidates;
+    }
+    let (width, height) = image.dimensions();
 
     // Detection cell of a point, clamped to the grid.
     let cell_of = |x: f32, y: f32| -> usize {
@@ -105,6 +115,9 @@ pub fn good_features_to_track_grid(
 /// Runs the Shi-Tomasi pipeline and returns candidate corners sorted by
 /// descending quality, before any spacing constraint is applied.
 fn detect_candidates(image: &GrayImage, quality_level: f32) -> Vec<(u32, u32, f32)> {
+    if image.width() < 3 || image.height() < 3 {
+        return Vec::new();
+    }
     // Compute gradients
     let (gx, gy) = compute_gradients(image);
 
@@ -241,13 +254,19 @@ fn compute_min_eigenvalues(
     let mut features = Vec::with_capacity(a_data.len());
 
     for i in 0..a_data.len() {
-        let a_val = a_data[i] as i32;
-        let b_val = b_data[i] as i32;
-        let c_val = c_data[i] as i32;
+        // Use f64 intermediates to reduce cancellation when the trace and the
+        // discriminant's square root nearly coincide (strongly oriented
+        // gradients). This is for accuracy, not overflow prevention: the
+        // current 8-bit tensor components have magnitude <= 16_129, and even
+        // the discriminant fits in i32. Keep the public score type as f32.
+        let a_val = a_data[i] as f64;
+        let b_val = b_data[i] as f64;
+        let c_val = c_data[i] as f64;
 
-        let trace = a_val + b_val;
-        let discriminant = (a_val - b_val).pow(2) + 4 * c_val.pow(2);
-        let min_eigen = (((trace - discriminant) as f32).sqrt()) / 2.0;
+        // Integer gradient/filter rounding can make the tensor slightly
+        // indefinite; clamp negative eigenvalues to a zero corner response.
+        let discriminant_sqrt = ((a_val - b_val).powi(2) + 4.0 * c_val.powi(2)).sqrt();
+        let min_eigen = ((a_val + b_val - discriminant_sqrt) * 0.5).max(0.0) as f32;
 
         let x = i as u32 % width;
         let y = i as u32 / width;
@@ -302,7 +321,8 @@ fn filter_by_quality(features: &mut Vec<(u32, u32, f32)>, quality_level: f32) {
         .map(|&(_, _, q)| q)
         .fold(0.0f32, |a, b| a.max(b));
     let threshold = quality_level * max_quality;
-    features.retain(|&(_, _, q)| q >= threshold);
+    // A zero response is not a corner, including when the entire image is flat.
+    features.retain(|&(_, _, q)| q > 0.0 && q >= threshold);
 }
 
 fn filter_by_distance(
@@ -311,51 +331,82 @@ fn filter_by_distance(
     width: u32,
     height: u32,
 ) -> Vec<(u32, u32, f32)> {
-    let cell_size = min_distance;
-    let grid_width = width.div_ceil(cell_size);
-    let grid_height = height.div_ceil(cell_size);
-    let mut grid = vec![vec![None; grid_height as usize]; grid_width as usize];
+    if features.is_empty() || min_distance == 0 {
+        return features.to_vec();
+    }
+    let mut occupancy = OccupancyGrid::new(width, height, min_distance);
     let mut result = Vec::new();
-
-    let min_dist_sq = (min_distance * min_distance) as i32;
-
     for &(x, y, q) in features {
-        let cell_x = x / cell_size;
-        let cell_y = y / cell_size;
-        let mut too_close = false;
-
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                let check_x = cell_x as i32 + dx;
-                let check_y = cell_y as i32 + dy;
-
-                if check_x < 0
-                    || check_y < 0
-                    || check_x >= grid_width as i32
-                    || check_y >= grid_height as i32
-                {
-                    continue;
-                }
-
-                if let Some((px, py)) = grid[check_x as usize][check_y as usize] {
-                    let dist_sq: i32 =
-                        (x as i32 - px as i32).pow(2) + (y as i32 - py as i32).pow(2);
-                    if dist_sq < min_dist_sq {
-                        too_close = true;
-                        break;
-                    }
-                }
-            }
-            if too_close {
-                break;
-            }
-        }
-
-        if !too_close {
-            grid[cell_x as usize][cell_y as usize] = Some((x, y));
+        let (xf, yf) = (x as f32, y as f32);
+        if !occupancy.has_neighbor_within(xf, yf, min_distance as f32) {
+            // Multiple accepted points can occupy one cell (diagonally). Keep
+            // every one so later candidates cannot hide an earlier neighbor.
+            occupancy.insert(xf, yf);
             result.push((x, y, q));
         }
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimum_eigenvalues_match_analytic_tensors() {
+        let tensors = [
+            (4, 9, 0, 4.0),
+            (5, 5, 4, 1.0),
+            (5, 5, -4, 1.0),
+            (4, 9, 6, 0.0),
+            (0, 0, 0, 0.0),
+            (16_129, 16_129, 0, 16_129.0),
+            (16_129, 16_129, 16_129, 0.0),
+            // Independent integer rounding can make a tensor slightly indefinite.
+            (0, 0, 1, 0.0),
+        ];
+        let a = ImageBuffer::from_vec(
+            tensors.len() as u32,
+            1,
+            tensors.iter().map(|t| t.0).collect(),
+        )
+        .unwrap();
+        let b = ImageBuffer::from_vec(
+            tensors.len() as u32,
+            1,
+            tensors.iter().map(|t| t.1).collect(),
+        )
+        .unwrap();
+        let c = ImageBuffer::from_vec(
+            tensors.len() as u32,
+            1,
+            tensors.iter().map(|t| t.2).collect(),
+        )
+        .unwrap();
+        let actual = compute_min_eigenvalues(&a, &b, &c);
+        for ((_, _, score), tensor) in actual.iter().zip(tensors) {
+            assert!(score.is_finite());
+            assert!(
+                (score - tensor.3).abs() < 1e-5,
+                "wrong score for {tensor:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spacing_keeps_all_accepted_points_in_each_cell() {
+        let candidates = [(10, 10, 3.0), (19, 19, 2.0), (10, 11, 1.0)];
+        assert_eq!(filter_by_distance(&candidates, 10, 30, 30), candidates[..2]);
+    }
+
+    #[test]
+    fn zero_spacing_keeps_all_candidates_and_large_spacing_does_not_overflow() {
+        let candidates = [(1, 1, 3.0), (1, 2, 2.0), (20, 20, 1.0)];
+        assert_eq!(filter_by_distance(&candidates, 0, 30, 30), candidates);
+        assert_eq!(
+            filter_by_distance(&candidates, u32::MAX, 30, 30),
+            candidates[..1]
+        );
+    }
 }
