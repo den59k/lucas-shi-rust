@@ -19,6 +19,13 @@
 - Preserve small eigenvalues of nearly rank-one tensors using an exact i64
   determinant and `lambda_min = determinant / lambda_max` in f64.
 
+### Security
+
+- Update the development dependency imageproc to 0.27.0, which includes fixes for
+  [RUSTSEC-2026-0115](https://rustsec.org/advisories/RUSTSEC-2026-0115.html),
+  [RUSTSEC-2026-0116](https://rustsec.org/advisories/RUSTSEC-2026-0116.html), and
+  [RUSTSEC-2026-0117](https://rustsec.org/advisories/RUSTSEC-2026-0117.html).
+
 Public API signatures and LK tracking are unchanged. Detected positions and
 scores can change as a consequence of these corrections; existing detection
 thresholds may need retuning. The score normalization is preserved, but eliminating

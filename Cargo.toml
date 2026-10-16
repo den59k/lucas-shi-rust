@@ -23,7 +23,7 @@ image = "0.25.10"
 nalgebra = "0.34.1"
 
 [dev-dependencies]
-imageproc = "0.26.1"
+imageproc = "0.27.0"
 criterion = "0.5"
 
 [[bench]]
