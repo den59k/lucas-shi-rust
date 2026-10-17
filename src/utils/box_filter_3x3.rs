@@ -47,18 +47,28 @@ fn box_sum_vertical_3x3_in_place(image: &mut ImageBuffer<Luma<i32>, Vec<i32>>) {
     let (width, height) = (image.width() as usize, image.height() as usize);
     let data: &mut [i32] = image;
 
-    for x in 0..width {
-        let mut above = 0i32;
-        let mut center = data[x];
-        for y in 0..height {
-            let below = if y + 1 < height {
-                data[(y + 1) * width + x]
-            } else {
-                0
-            };
-            data[y * width + x] = above + center + below;
-            above = center;
-            center = below;
+    // Sum whole rows lane by lane so the pass streams through memory and
+    // vectorizes; a column-wise walk strides a full row per element. `above`
+    // keeps the original values of the previous row, which is overwritten.
+    let mut above = vec![0i32; width];
+    for y in 0..height {
+        let (head, tail) = data.split_at_mut((y + 1) * width);
+        let row = &mut head[y * width..];
+        match tail.get(..width) {
+            Some(below) => {
+                for ((value, above), &below) in row.iter_mut().zip(&mut above).zip(below) {
+                    let center = *value;
+                    *value = *above + center + below;
+                    *above = center;
+                }
+            }
+            None => {
+                for (value, above) in row.iter_mut().zip(&mut above) {
+                    let center = *value;
+                    *value = *above + center;
+                    *above = center;
+                }
+            }
         }
     }
 }
