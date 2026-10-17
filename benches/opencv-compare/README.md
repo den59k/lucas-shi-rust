@@ -48,10 +48,10 @@ adds the rewritten tracker loop, the row-wise detector and `DetectorContext`.
 
 | Build | Detect before | Detect after | Track before | Track after |
 |---|---:|---:|---:|---:|
-| crate, wasm simd128 | 5.13 | **2.11** | 24.4 | **4.18** |
-| crate, wasm scalar | 6.11 | 3.36 | 26.2 | 5.36 |
-| OpenCV.js 4.11, wasm scalar | 2.72 | 2.44 | 5.97 | 5.80 |
-| crate, native | 5.06 | **1.12** | 21.8 | **3.31** |
+| crate, wasm simd128 | 5.13 | **1.61** | 24.4 | **4.19** |
+| crate, wasm scalar | 6.11 | 3.15 | 26.2 | 5.41 |
+| OpenCV.js 4.11, wasm scalar | 2.72 | 2.45 | 5.97 | 5.81 |
+| crate, native | 5.06 | **1.03** | 21.8 | **3.34** |
 | OpenCV native, 1 thread | 2.05 | 2.02 | 2.32 | 2.32 |
 | OpenCV native, 24 threads | 2.06 | 2.03 | 0.98 | 1.04 |
 
@@ -70,8 +70,11 @@ Detection before was dominated by the three 3×3 box passes (1.9 ms, a variable
 divisor per pixel) and non-maximum suppression over a 3.5 MB vector of
 per-pixel tuples (1.6 ms plus 0.7 ms to build it). After: the box passes take
 1.1 ms and NMS 0.2 ms with the baseline SSE2 build, and the whole pipeline
-1.1 ms with the runtime-selected AVX2 copy. The remaining single largest stage
-is the f64 eigenvalue square root, about 0.7 ms before AVX2.
+1.1 ms with the runtime-selected AVX2 copy. Replacing the f64 eigenvalue
+square root with a cancellation-free f32 form (exact integer determinant and
+discriminant) then took native detection to 1.0 ms and wasm simd128 from
+2.1 to 1.6 ms; the f32 gain is larger in wasm because simd128 has only two
+f64 lanes.
 
 OpenCV's tracking time barely moves with its termination criteria: 2.13 ms at
 epsilon 0.01, 2.33 ms at 1e-6, 2.15 ms with a fixed 30 iterations. About 1.6 ms
@@ -79,8 +82,9 @@ of its 2.3 ms is building the two Gaussian pyramids.
 
 ### Detection parity, native OpenCV
 
-Unchanged by the rewrite: the detector's arithmetic is identical, and the wasm
-builds reproduce the native crate's corners to within 5e-5.
+Unchanged by the rewrite: corner positions are identical, scores moved by at
+most one part in ten million with the f32 eigenvalue form, and the wasm builds
+reproduce the native crate's corners to within 5e-5.
 
 | OpenCV gradient | OpenCV corners | crate corners | crate corners within 1.5 px of an OpenCV corner | OpenCV corners within 1.5 px of a crate corner | top-100 overlap |
 |---|---:|---:|---:|---:|---:|

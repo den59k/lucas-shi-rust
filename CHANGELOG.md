@@ -50,5 +50,9 @@ Bundled 720×405 frame pair, 200 points, 21 px window, 4 levels, Ryzen 9 9900X:
   wasm with `simd128`.
 - Detection: row-wise box filter with a constant divisor, non-maximum
   suppression directly on a flat score plane instead of a per-pixel tuple
-  vector, AVX2 copy on x86. 5.1 → 1.1 ms native, 5.1 → 2.1 ms in wasm.
+  vector, AVX2 copy on x86. The minimum eigenvalue is evaluated in f32 as
+  `2·det / (trace + sqrt(disc))` with the determinant and discriminant exact in
+  i32, which is cancellation-free, so the f64 intermediates are gone. 5.1 →
+  1.0 ms native, 5.1 → 1.6 ms in wasm. Corner positions are unchanged; scores
+  differ from 0.4.0-pre by at most one part in ten million.
 - Scalar wasm builds no longer warn about an unused `simd128` import.

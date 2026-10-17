@@ -423,19 +423,21 @@ fn compute_gradient_products(
 #[inline(always)]
 fn compute_min_eigenvalues(a: &[i16], b: &[i16], c: &[i16], scores: &mut [f32]) {
     for (((a, b), c), score) in a.iter().zip(b).zip(c).zip(scores.iter_mut()) {
-        // Use f64 intermediates to reduce cancellation when the trace and the
-        // discriminant's square root nearly coincide (strongly oriented
-        // gradients). This is for accuracy, not overflow prevention: the
-        // current 8-bit tensor components have magnitude <= 16_129, and even
-        // the discriminant fits in i32. Keep the public score type as f32.
-        let a_val = *a as f64;
-        let b_val = *b as f64;
-        let c_val = *c as f64;
-
+        // The tensor components have magnitude <= 16_129, so the determinant
+        // and the discriminant are exact in i32. Evaluating the minimum
+        // eigenvalue as 2*det / (trace + sqrt(disc)) instead of
+        // (trace - sqrt(disc)) / 2 avoids the cancellation that would otherwise
+        // turn an edge's exact zero response into f32 noise: the sign comes
+        // from the exact determinant, and the rest is a single rounding.
+        let (a, b, c) = (*a as i32, *b as i32, *c as i32);
+        let det = a * b - c * c;
+        let disc = (a - b) * (a - b) + 4 * c * c;
+        let trace = (a + b) as f32;
+        let value = 2.0 * det as f32 / (trace + (disc as f32).sqrt());
         // Integer gradient/filter rounding can make the tensor slightly
-        // indefinite; clamp negative eigenvalues to a zero corner response.
-        let discriminant_sqrt = ((a_val - b_val).powi(2) + 4.0 * c_val.powi(2)).sqrt();
-        *score = ((a_val + b_val - discriminant_sqrt) * 0.5).max(0.0) as f32;
+        // indefinite (det < 0); that is a zero corner response, as is a flat
+        // tensor (det == 0, where the formula would divide 0 by 0).
+        *score = if det > 0 { value } else { 0.0 };
     }
 }
 
@@ -507,7 +509,7 @@ mod tests {
         for (score, tensor) in scores.iter().zip(tensors) {
             assert!(score.is_finite());
             assert!(
-                (score - tensor.3).abs() < 1e-5,
+                (score - tensor.3).abs() <= 1e-6 * f32::max(tensor.3, 1.0),
                 "wrong score for {tensor:?}"
             );
         }
