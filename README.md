@@ -11,7 +11,8 @@ High-performance Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi
 - 🔁 Forward-backward consistency check to reject occlusions and outliers
 - 🧭 Optional motion prediction (initial guess) for large inter-frame displacements
 - 🔍 Shi-Tomasi feature detection, plus grid-based detection for uniform coverage
-- ♻️ Zero-allocation steady-state path (`TrackerContext`) for real-time per-frame tracking
+- ♻️ Zero-allocation steady-state path (`TrackerContext`, `DetectorContext`) for real-time per-frame tracking, with up-front capacity reservation
+- 🌡️ f32 pipeline for images in physical units, e.g. thermal frames in °C, without 8-bit quantization
 - ⚡ SIMD-accelerated gradients and pyramid: AVX2 (x86), NEON (aarch64), `simd128` (wasm)
 - 🌐 Built on the [`image`](https://crates.io/crates/image) crate; WebAssembly-ready
 
@@ -86,8 +87,61 @@ let mut detector = DetectorContext::new();
 let fresh = detector.detect_grid(&prev, 6, 4, 3, 0.05, 12, &points);
 ```
 
+To keep even the first frame free of allocation, create the contexts with
+`with_capacity`. A `DetectorCapacity` reserves for the largest possible
+candidate count, so no image content can grow a buffer later:
+
+```rust
+use optical_flow_lk::{DetectorCapacity, DetectorContext, TrackerCapacity, TrackerContext};
+
+let mut detector = DetectorContext::with_capacity(DetectorCapacity {
+    width: 640, height: 480, min_distance: 12, grid_cells: 24, existing_points: 200,
+});
+let mut tracker = TrackerContext::with_capacity(TrackerCapacity {
+    width: 640, height: 480, levels: 4, window_size: 21, points: 200,
+});
+```
+
+### f32 images in physical units
+
+For sensors whose values carry a unit, such as thermal cameras in °C,
+[`FloatDetectorContext`] and [`FloatTrackerContext`] run the same algorithms on
+f32 frames, without range normalization or 8-bit quantization. Scores and the
+tracker's eigenvalue threshold are in (unit / pixel)^2, residuals in the unit
+itself. A [`FloatImageView`] borrows a frame after checking that every value is
+finite and within range:
+
+```rust
+use optical_flow_lk::{
+    FloatDetectorContext, FloatImageView, FloatTrackerContext, ScoreThreshold,
+    DEFAULT_FB_THRESHOLD,
+};
+
+// `prev_celsius` and `next_celsius` are 640x480 row-major `&[f32]` frames.
+let prev = FloatImageView::new(prev_celsius, 640, 480)?;
+let next = FloatImageView::new(next_celsius, 640, 480)?;
+
+// Corners scoring at least 0.002 (°C / px)^2, at least 8 px apart.
+let mut detector = FloatDetectorContext::new();
+let corners = detector.detect(prev, ScoreThreshold::absolute(0.002), 8);
+let points: Vec<(f32, f32)> = corners.iter().map(|&(x, y, _)| (x as f32, y as f32)).collect();
+
+let mut tracker = FloatTrackerContext::new();
+tracker.prepare(prev, next, 3);
+let results = tracker.track_fb(&points, None, 15, 15, 1e-4, DEFAULT_FB_THRESHOLD);
+```
+
+On frames holding 8-bit values the f32 detector returns the 8-bit detector's
+corners bit for bit. On a 640x480 frame on an Apple M2, a whole frame step
+(pyramids, forward-backward tracking, grid top-up) costs about 1.1x the 8-bit
+pipeline on the same data, natively and under WASI; tracking alone is faster in
+f32. See [the measurements](benches/results/float-vs-u8-2026-10-17.md).
+
 [`TrackerContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.TrackerContext.html
 [`DetectorContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.DetectorContext.html
+[`FloatDetectorContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.FloatDetectorContext.html
+[`FloatTrackerContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.FloatTrackerContext.html
+[`FloatImageView`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.FloatImageView.html
 
 > The original `calc_optical_flow` is still available but **deprecated** since
 > 0.3.0 — prefer `calc_optical_flow_ex` (status + error) or `TrackerContext`.

@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- f32 pipeline for images in physical units, e.g. thermal frames in °C:
+  `FloatImageView` (validated borrowed frame: finite values up to 2^24 in
+  magnitude), `FloatDetectorContext` with `ScoreThreshold` (absolute threshold
+  in (unit / pixel)^2, optional relative part against the strongest corner of
+  the whole image), and `FloatTrackerContext` (f32 pyramids, prediction and
+  forward-backward check; residuals in the input unit, explicit eigenvalue
+  threshold, scale-free singularity test). The f32 detector sums the structure
+  tensor in f64 and returns the 8-bit detector's result bit for bit on
+  integer-valued frames. See
+  [the 8-bit versus f32 measurements](benches/results/float-vs-u8-2026-10-17.md).
+- `DetectorCapacity` / `TrackerCapacity` with `with_capacity` and `reserve` on
+  all four contexts: buffers are allocated up front, including the largest
+  possible candidate count, so calls within the capacity never allocate.
+  Pyramid levels reuse their allocation when the frame size changes.
+- Bit-exact regression fixtures for 8-bit detection and tracking and for the
+  f32 pipeline, identical on aarch64 and wasm32-wasip1, and a
+  `rust-toolchain.toml` pinning the stable channel.
+
+### Benchmarks
+
+- Add `benches/float.rs`: 8-bit versus f32 detection, pyramids, tracking and a
+  whole frame step on equal data and on a thermal frame, natively and on WASI.
+- The allocation tests count per thread, count `alloc_zeroed`, and cover
+  `track_fb`, reserved contexts and varying content and point counts.
+
 ## 0.4.1 — 2026-10-18
 
 ### Fixed

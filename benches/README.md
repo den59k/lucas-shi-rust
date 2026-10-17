@@ -166,3 +166,19 @@ manifest build configuration, dependencies and production sources must match.
 The final fused-scoring run is recorded in
 [scoring-performance-2026-10-17.md](results/scoring-performance-2026-10-17.md),
 with machine-readable timing, output and provenance summaries alongside it.
+
+## 8-bit versus f32
+
+`cargo +stable bench --locked --bench float` times the 8-bit and f32 pipelines
+stage by stage with warmed contexts: plain and grid top-up detection, pyramid
+construction, `track`, `track_fb`, and a whole frame step (input preparation,
+pyramids, `track_fb`, grid top-up around the surviving points). The texture and
+example inputs give both pipelines the same pixel values, so their outputs are
+identical and the ratio is the cost of the f32 implementation. The thermal input
+compares the deployment alternatives: a frame in °C converted to 8 bits with a
+fixed 20-220 °C mapping, against validating it as an f32 view. Corner counts,
+tracked counts and position errors against the true motion are printed outside
+timing. The same harness runs under WASI as described above.
+
+The recorded run is in
+[float-vs-u8-2026-10-17.md](results/float-vs-u8-2026-10-17.md).
