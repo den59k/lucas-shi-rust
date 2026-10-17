@@ -1,51 +1,34 @@
+#[cfg(test)]
 use image::{ImageBuffer, Luma};
 
 /// Largest input magnitude for which a full 3x3 sum cannot overflow i32.
 const MAX_BOX_SUM_INPUT: i32 = i32::MAX / 9;
 
-/// Centered separable 3x3 sum without allocating or dividing. Boundaries include
-/// only available samples; the caller normalizes by their count when needed.
-/// Inputs must have magnitude <= i32::MAX / 9 so both passes fit in i32.
-/// Empty, single-row, and single-column images are supported.
-pub fn box_sum_3x3_in_place(image: &mut ImageBuffer<Luma<i32>, Vec<i32>>) {
-    if image.width() == 0 || image.height() == 0 {
-        return;
-    }
+/// Horizontal pass of a centered 3x3 box sum over one row, without dividing:
+/// `dst[x] = src[x - 1] + src[x] + src[x + 1]`. Boundaries include only the
+/// available samples; the caller normalizes by their count when needed. Inputs
+/// must have magnitude <= i32::MAX / 9 so both passes fit in i32.
+pub fn sum_row_3(src: &[i32], dst: &mut [i32]) {
+    debug_assert_eq!(src.len(), dst.len());
     // Release builds would wrap silently on overflow; catch violations in debug.
     debug_assert!(
-        image
-            .iter()
+        src.iter()
             .all(|&v| v.unsigned_abs() <= MAX_BOX_SUM_INPUT.unsigned_abs()),
-        "box_sum_3x3_in_place input exceeds i32::MAX / 9"
+        "box sum input exceeds i32::MAX / 9"
     );
-    // Accumulate each dimension once; normalization is deferred to the score.
-    box_sum_horizontal_3x3_in_place(image);
-    box_sum_vertical_3x3_in_place(image);
-}
-
-fn box_sum_horizontal_3x3_in_place(image: &mut ImageBuffer<Luma<i32>, Vec<i32>>) {
-    let width = image.width() as usize;
-    let data: &mut [i32] = image;
-
-    // Read from a copy of the row: rereading a written pixel would make this a
-    // recursive filter, and a register chain would serialize the loop.
-    let mut source = vec![0i32; width];
-    for row in data.chunks_exact_mut(width) {
-        source.copy_from_slice(row);
-        sum_row_3(&source, row);
-    }
-}
-
-/// `dst[x] = src[x - 1] + src[x] + src[x + 1]`, omitting neighbors outside the
-/// row. The interior has no loop-carried dependency, so it vectorizes.
-fn sum_row_3(src: &[i32], dst: &mut [i32]) {
     let width = src.len();
-    if width == 1 {
-        dst[0] = src[0];
-        return;
+    match width {
+        0 => return,
+        1 => {
+            dst[0] = src[0];
+            return;
+        }
+        _ => {}
     }
     dst[0] = src[0] + src[1];
     dst[width - 1] = src[width - 2] + src[width - 1];
+    // Reading from a separate source row keeps this a centered sum rather than
+    // a recursive filter, and leaves no loop-carried dependency to vectorize.
     let interior = dst[1..width - 1]
         .iter_mut()
         .zip(&src[..width - 2])
@@ -56,33 +39,48 @@ fn sum_row_3(src: &[i32], dst: &mut [i32]) {
     }
 }
 
-fn box_sum_vertical_3x3_in_place(image: &mut ImageBuffer<Luma<i32>, Vec<i32>>) {
-    let (width, height) = (image.width() as usize, image.height() as usize);
-    let data: &mut [i32] = image;
-
-    // Sum whole rows lane by lane so the pass streams through memory and
-    // vectorizes; a column-wise walk strides a full row per element. `above`
-    // keeps the original values of the previous row, which is overwritten.
-    let mut above = vec![0i32; width];
-    for y in 0..height {
-        let (head, tail) = data.split_at_mut((y + 1) * width);
-        let row = &mut head[y * width..];
-        match tail.get(..width) {
-            Some(below) => {
-                for ((value, above), &below) in row.iter_mut().zip(&mut above).zip(below) {
-                    let center = *value;
-                    *value = *above + center + below;
-                    *above = center;
-                }
-            }
-            None => {
-                for (value, above) in row.iter_mut().zip(&mut above) {
-                    let center = *value;
-                    *value = *above + center;
-                    *above = center;
-                }
+/// Vertical pass of a centered 3x3 box sum: lane-wise sum of the horizontally
+/// summed rows above, at and below the output row. `None` marks a row outside
+/// the image, so boundaries again include only the available samples.
+pub fn sum_rows_3(above: Option<&[i32]>, center: &[i32], below: Option<&[i32]>, dst: &mut [i32]) {
+    debug_assert_eq!(center.len(), dst.len());
+    match (above, below) {
+        (Some(above), Some(below)) => {
+            let rows = dst.iter_mut().zip(above).zip(center).zip(below);
+            for (((value, &above), &center), &below) in rows {
+                *value = above + center + below;
             }
         }
+        (Some(edge), None) | (None, Some(edge)) => {
+            for ((value, &edge), &center) in dst.iter_mut().zip(edge).zip(center) {
+                *value = edge + center;
+            }
+        }
+        (None, None) => dst.copy_from_slice(center),
+    }
+}
+
+/// Whole-image composition of the row kernels, so tests can check them against
+/// an out-of-place 2D reference. Empty, single-row, and single-column images
+/// are supported.
+#[cfg(test)]
+pub fn box_sum_3x3_in_place(image: &mut ImageBuffer<Luma<i32>, Vec<i32>>) {
+    let width = image.width() as usize;
+    if width == 0 || image.height() == 0 {
+        return;
+    }
+    let data: &mut [i32] = image;
+    let mut horizontal = vec![0i32; data.len()];
+    for (src, dst) in data
+        .chunks_exact(width)
+        .zip(horizontal.chunks_exact_mut(width))
+    {
+        sum_row_3(src, dst);
+    }
+    let rows: Vec<&[i32]> = horizontal.chunks_exact(width).collect();
+    for (y, dst) in data.chunks_exact_mut(width).enumerate() {
+        let above = y.checked_sub(1).map(|above| rows[above]);
+        sum_rows_3(above, rows[y], rows.get(y + 1).copied(), dst);
     }
 }
 

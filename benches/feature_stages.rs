@@ -82,10 +82,7 @@ fn bench_stages(c: &mut Criterion) {
     for case in feature_inputs::cases() {
         let (w, h) = case.image.dimensions();
         let gradients = utils::fast_gradients::compute_gradients(&case.image);
-        let products = detector::products(&gradients.0, &gradients.1);
-        let mut filtered = products.clone();
-        detector::smooth(&mut filtered);
-        let scores = detector::scores(&filtered);
+        let scores = detector::tensor_scores(&gradients.0, &gradients.1);
         let mut maxima = scores.clone();
         detector::nms(&mut maxima, w, h);
         let mut qualified = maxima.clone();
@@ -129,15 +126,8 @@ fn bench_stages(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new(case.name, "gradients"), |b| {
             b.iter(|| utils::fast_gradients::compute_gradients(black_box(&case.image)));
         });
-        group.bench_function(BenchmarkId::new(case.name, "products"), |b| {
-            b.iter(|| detector::products(black_box(&gradients.0), black_box(&gradients.1)));
-        });
-        stage!("tensor_filter", || products.clone(), |mut p| {
-            detector::smooth(black_box(&mut p));
-            p
-        });
-        group.bench_function(BenchmarkId::new(case.name, "scores"), |b| {
-            b.iter(|| detector::scores(black_box(&filtered)));
+        group.bench_function(BenchmarkId::new(case.name, "tensor_scores"), |b| {
+            b.iter(|| detector::tensor_scores(black_box(&gradients.0), black_box(&gradients.1)));
         });
         stage!("nms", || scores.clone(), |mut p| {
             detector::nms(black_box(&mut p), w, h);

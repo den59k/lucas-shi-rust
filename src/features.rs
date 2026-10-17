@@ -1,7 +1,10 @@
 use image::{GrayImage, ImageBuffer, Luma};
 use std::cmp::Ordering;
 
-use crate::utils::{box_filter_3x3::box_sum_3x3_in_place, fast_gradients::compute_gradients};
+use crate::utils::{
+    box_filter_3x3::{sum_row_3, sum_rows_3},
+    fast_gradients::compute_gradients,
+};
 
 /// Finds good features points using the Shi-Tomasi algorithm
 ///
@@ -122,17 +125,8 @@ fn detect_candidates(image: &GrayImage, quality_level: f32) -> Vec<(u32, u32, f3
     // Compute gradients
     let (gx, gy) = compute_gradients(image);
 
-    // Compute squared gradients and their product
-    let (mut ix_sq, mut iy_sq, mut ix_iy) = compute_gradient_products(&gx, &gy);
-
-    // Sum without division; min_eigenvalue_scores applies the mean and
-    // Scharr normalization together, preserving fractional gradient responses.
-    box_sum_3x3_in_place(&mut ix_sq);
-    box_sum_3x3_in_place(&mut iy_sq);
-    box_sum_3x3_in_place(&mut ix_iy);
-
-    // Compute minimum eigenvalues
-    let mut features = min_eigenvalue_scores(&ix_sq, &iy_sq, &ix_iy);
+    // Gradient products, 3x3 window sums and minimum eigenvalues, row by row
+    let mut features = min_eigenvalue_scores(&gx, &gy);
 
     // Non-maximum suppression
     non_maximum_suppression(&mut features, image.width(), image.height());
@@ -210,68 +204,121 @@ impl OccupancyGrid {
     }
 }
 
-type GradientProduct = (
-    ImageBuffer<Luma<i32>, Vec<i32>>,
-    ImageBuffer<Luma<i32>, Vec<i32>>,
-    ImageBuffer<Luma<i32>, Vec<i32>>,
-);
-
-fn compute_gradient_products(
-    gx: &ImageBuffer<Luma<i16>, Vec<i16>>,
-    gy: &ImageBuffer<Luma<i16>, Vec<i16>>,
-) -> GradientProduct {
-    let (width, height) = gx.dimensions();
-    let gx_data = gx.as_raw();
-    let gy_data = gy.as_raw();
-    let n = gx_data.len();
-
-    // Build the three product planes as flat buffers, avoiding per-pixel
-    // bounds-checked `put_pixel` (a noticeable win under WASM).
-    let mut ix_sq = vec![0i32; n];
-    let mut iy_sq = vec![0i32; n];
-    let mut ix_iy = vec![0i32; n];
-
-    // For u8 images, |Scharr| <= 4080: products <= 16_646_400 and 3x3
-    // sums <= 149_817_600 fit in i32. Deferring the /32 normalization avoids
-    // discarding sub-grey-level gradients before squaring them.
-    for i in 0..n {
-        let ix = gx_data[i] as i32;
-        let iy = gy_data[i] as i32;
-        ix_sq[i] = ix * ix;
-        iy_sq[i] = iy * iy;
-        ix_iy[i] = ix * iy;
-    }
-
-    (
-        ImageBuffer::from_vec(width, height, ix_sq).unwrap(),
-        ImageBuffer::from_vec(width, height, iy_sq).unwrap(),
-        ImageBuffer::from_vec(width, height, ix_iy).unwrap(),
-    )
+/// One image row of the structure tensor components `[[xx, xy], [xy, yy]]`:
+/// raw gradient products, or their horizontal or full 3x3 window sums.
+struct TensorRow {
+    xx: Vec<i32>,
+    yy: Vec<i32>,
+    xy: Vec<i32>,
 }
 
-fn min_eigenvalue_scores(
-    a: &ImageBuffer<Luma<i32>, Vec<i32>>,
-    b: &ImageBuffer<Luma<i32>, Vec<i32>>,
-    c: &ImageBuffer<Luma<i32>, Vec<i32>>,
-) -> Vec<(u32, u32, f32)> {
-    let (width, height) = a.dimensions();
-    let (a_data, b_data, c_data) = (a.as_raw(), b.as_raw(), c.as_raw());
-    let mut features = Vec::with_capacity(a_data.len());
+impl TensorRow {
+    fn new(width: usize) -> Self {
+        TensorRow {
+            xx: vec![0; width],
+            yy: vec![0; width],
+            xy: vec![0; width],
+        }
+    }
 
-    for i in 0..a_data.len() {
-        let x = i as u32 % width;
-        let y = i as u32 / width;
-        let cols = 1 + u32::from(x > 0) + u32::from(x + 1 < width);
-        let rows = 1 + u32::from(y > 0) + u32::from(y + 1 < height);
-        // Eigenvalues scale linearly with a common tensor scale. Divide once
-        // by Scharr gain squared and the actual sample count, including edges.
-        let normalization = (32 * 32 * cols * rows) as f64;
-        let min_eigen =
-            (tensor_min_eigenvalue(a_data[i], b_data[i], c_data[i]) / normalization) as f32;
-        features.push((x, y, min_eigen));
+    fn planes(&self) -> [&[i32]; 3] {
+        [&self.xx, &self.yy, &self.xy]
+    }
+
+    fn planes_mut(&mut self) -> [&mut [i32]; 3] {
+        [&mut self.xx, &mut self.yy, &mut self.xy]
+    }
+
+    /// Vertical 3-row sum of horizontally summed rows; `None` is outside the image.
+    fn sum_rows(&mut self, above: Option<&Self>, center: &Self, below: Option<&Self>) {
+        let (above, below) = (above.map(Self::planes), below.map(Self::planes));
+        for (k, dst) in self.planes_mut().into_iter().enumerate() {
+            let (a, b) = (above.map(|p| p[k]), below.map(|p| p[k]));
+            sum_rows_3(a, center.planes()[k], b, dst);
+        }
+    }
+}
+
+/// Raw Scharr products of one row. For u8 images, |Scharr| <= 4080: products
+/// <= 16_646_400 and 3x3 sums <= 149_817_600 fit in i32. Deferring the /32
+/// normalization avoids discarding sub-grey-level gradients before squaring.
+fn gradient_products_row(gx: &[i16], gy: &[i16], products: &mut TensorRow) {
+    let rows = products
+        .xx
+        .iter_mut()
+        .zip(&mut products.yy)
+        .zip(&mut products.xy)
+        .zip(gx.iter().zip(gy));
+    for (((xx, yy), xy), (&ix, &iy)) in rows {
+        let (ix, iy) = (ix as i32, iy as i32);
+        *xx = ix * ix;
+        *yy = iy * iy;
+        *xy = ix * iy;
+    }
+}
+
+/// Products of one gradient row, summed horizontally over three pixels.
+fn horizontal_tensor_row(gx: &[i16], gy: &[i16], products: &mut TensorRow, sums: &mut TensorRow) {
+    gradient_products_row(gx, gy, products);
+    sum_row_3(&products.xx, &mut sums.xx);
+    sum_row_3(&products.yy, &mut sums.yy);
+    sum_row_3(&products.xy, &mut sums.xy);
+}
+
+/// Minimum eigenvalue of the mean 3x3 structure tensor at every pixel, in
+/// row-major order. Products and window sums are computed one row at a time,
+/// keeping only three horizontally summed rows instead of full tensor planes.
+fn min_eigenvalue_scores(
+    gx: &ImageBuffer<Luma<i16>, Vec<i16>>,
+    gy: &ImageBuffer<Luma<i16>, Vec<i16>>,
+) -> Vec<(u32, u32, f32)> {
+    let (width, height) = gx.dimensions();
+    let (w, h) = (width as usize, height as usize);
+    let mut features = Vec::with_capacity(w * h);
+    if w == 0 || h == 0 {
+        return features;
+    }
+
+    let (gx, gy) = (gx.as_raw(), gy.as_raw());
+    let row = |y: usize| y * w..(y + 1) * w;
+    let mut products = TensorRow::new(w);
+    // Horizontal sums of the rows above, at and below y, stored at row % 3.
+    let mut ring = [TensorRow::new(w), TensorRow::new(w), TensorRow::new(w)];
+    let mut window = TensorRow::new(w);
+
+    horizontal_tensor_row(&gx[row(0)], &gy[row(0)], &mut products, &mut ring[0]);
+    for y in 0..h {
+        if y + 1 < h {
+            let next = &mut ring[(y + 1) % 3];
+            horizontal_tensor_row(&gx[row(y + 1)], &gy[row(y + 1)], &mut products, next);
+        }
+        let above = (y > 0).then(|| &ring[(y + 2) % 3]);
+        let below = (y + 1 < h).then(|| &ring[(y + 1) % 3]);
+        window.sum_rows(above, &ring[y % 3], below);
+        score_row(&window, y as u32, width, height, &mut features);
     }
 
     features
+}
+
+/// Appends the normalized minimum eigenvalues of one row of 3x3 window sums.
+fn score_row(
+    window: &TensorRow,
+    y: u32,
+    width: u32,
+    height: u32,
+    features: &mut Vec<(u32, u32, f32)>,
+) {
+    let rows = 1 + u32::from(y > 0) + u32::from(y + 1 < height);
+    let sums = window.xx.iter().zip(&window.yy).zip(&window.xy);
+    for (x, ((&a, &b), &c)) in (0..width).zip(sums) {
+        let cols = 1 + u32::from(x > 0) + u32::from(x + 1 < width);
+        // Eigenvalues scale linearly with a common tensor scale. Divide once
+        // by Scharr gain squared and the actual sample count, including edges.
+        let normalization = (32 * 32 * cols * rows) as f64;
+        let min_eigen = (tensor_min_eigenvalue(a, b, c) / normalization) as f32;
+        features.push((x, y, min_eigen));
+    }
 }
 
 /// Small eigenvalue of [[a, c], [c, b]], for summed gradient products.
@@ -366,6 +413,7 @@ fn filter_by_distance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::box_filter_3x3::box_sum_3x3_in_place;
 
     #[test]
     fn minimum_eigenvalues_match_analytic_tensors() {
@@ -390,14 +438,65 @@ mod tests {
         }
     }
 
+    type Plane = ImageBuffer<Luma<i32>, Vec<i32>>;
+
+    /// Scores of full-image window-sum planes, through the production row scorer.
+    fn scores_of_window_planes(a: &Plane, b: &Plane, c: &Plane) -> Vec<(u32, u32, f32)> {
+        let (width, height) = a.dimensions();
+        let mut features = Vec::new();
+        let mut window = TensorRow::new(width as usize);
+        for y in 0..height {
+            let row = (y * width) as usize..((y + 1) * width) as usize;
+            window.xx.copy_from_slice(&a.as_raw()[row.clone()]);
+            window.yy.copy_from_slice(&b.as_raw()[row.clone()]);
+            window.xy.copy_from_slice(&c.as_raw()[row]);
+            score_row(&window, y, width, height, &mut features);
+        }
+        features
+    }
+
     #[test]
     fn raw_products_preserve_fractional_normalized_gradients_and_extremes() {
-        let gx = ImageBuffer::from_vec(5, 1, vec![1i16, -31, 32, 4080, -4080]).unwrap();
-        let gy = ImageBuffer::from_vec(5, 1, vec![-1i16, 1, 31, -4080, -4080]).unwrap();
-        let (xx, yy, xy) = compute_gradient_products(&gx, &gy);
-        assert_eq!(xx.as_raw(), &[1, 961, 1024, 16_646_400, 16_646_400]);
-        assert_eq!(yy.as_raw(), &[1, 1, 961, 16_646_400, 16_646_400]);
-        assert_eq!(xy.as_raw(), &[-1, -31, 992, -16_646_400, 16_646_400]);
+        let gx = [1i16, -31, 32, 4080, -4080];
+        let gy = [-1i16, 1, 31, -4080, -4080];
+        let mut products = TensorRow::new(5);
+        gradient_products_row(&gx, &gy, &mut products);
+        assert_eq!(products.xx, [1, 961, 1024, 16_646_400, 16_646_400]);
+        assert_eq!(products.yy, [1, 1, 961, 16_646_400, 16_646_400]);
+        assert_eq!(products.xy, [-1, -31, 992, -16_646_400, 16_646_400]);
+    }
+
+    #[test]
+    fn row_pipeline_matches_full_plane_box_sums_for_small_and_odd_sizes() {
+        for width in 1..8 {
+            for height in 1..8 {
+                let gradient = |seed: u32| {
+                    ImageBuffer::from_fn(width, height, |x, y| {
+                        let hash = (x * 7 + y * 13 + seed).wrapping_mul(2_654_435_761) >> 19;
+                        Luma([(hash % 8161) as i16 - 4080])
+                    })
+                };
+                let (gx, gy) = (gradient(1), gradient(2));
+                let plane = |product: fn(i32, i32) -> i32| {
+                    let mut plane = ImageBuffer::from_fn(width, height, |x, y| {
+                        let (ix, iy) = (gx.get_pixel(x, y)[0], gy.get_pixel(x, y)[0]);
+                        Luma([product(ix as i32, iy as i32)])
+                    });
+                    box_sum_3x3_in_place(&mut plane);
+                    plane
+                };
+                let expected = scores_of_window_planes(
+                    &plane(|ix, _| ix * ix),
+                    &plane(|_, iy| iy * iy),
+                    &plane(|ix, iy| ix * iy),
+                );
+                assert_eq!(
+                    min_eigenvalue_scores(&gx, &gy),
+                    expected,
+                    "{width}x{height}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -408,7 +507,7 @@ mod tests {
             let c = ImageBuffer::new(width, height);
             box_sum_3x3_in_place(&mut a);
             box_sum_3x3_in_place(&mut b);
-            let scores = min_eigenvalue_scores(&a, &b, &c);
+            let scores = scores_of_window_planes(&a, &b, &c);
             assert_eq!(scores.len(), (width * height) as usize);
             assert!(scores.iter().all(|p| p.2 == 1.0));
         }
@@ -419,7 +518,7 @@ mod tests {
         let a = ImageBuffer::from_pixel(3, 3, Luma([1]));
         let b = a.clone();
         let c = ImageBuffer::new(3, 3);
-        let scores = min_eigenvalue_scores(&a, &b, &c);
+        let scores = scores_of_window_planes(&a, &b, &c);
         let expected = 1.0 / (32.0 * 32.0 * 9.0);
         assert_eq!(scores[4], (1, 1, expected));
     }
