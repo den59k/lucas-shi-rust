@@ -126,10 +126,12 @@ fn detect_candidates(image: &GrayImage, quality_level: f32) -> Vec<(u32, u32, f3
     let (gx, gy) = compute_gradients(image);
 
     // Gradient products, 3x3 window sums and minimum eigenvalues, row by row
-    let mut features = min_eigenvalue_scores(&gx, &gy);
+    let scores = min_eigenvalue_scores(&gx, &gy);
+    let (width, height) = (image.width() as usize, image.height() as usize);
 
-    // Non-maximum suppression
-    non_maximum_suppression(&mut features, image.width(), image.height());
+    // Non-maximum suppression, skipping scores that cannot pass the quality filter
+    let floor = quality_floor(&scores, width, height, quality_level);
+    let mut features = local_maxima(&scores, width, height, floor);
 
     // Filter by quality
     filter_by_quality(&mut features, quality_level);
@@ -265,18 +267,18 @@ fn horizontal_tensor_row(gx: &[i16], gy: &[i16], products: &mut TensorRow, sums:
     sum_row_3(&products.xy, &mut sums.xy);
 }
 
-/// Minimum eigenvalue of the mean 3x3 structure tensor at every pixel, in
-/// row-major order. Products and window sums are computed one row at a time,
-/// keeping only three horizontally summed rows instead of full tensor planes.
+/// Minimum eigenvalue of the mean 3x3 structure tensor at every pixel, as a
+/// row-major score plane. Products and window sums are computed one row at a
+/// time, keeping only three horizontally summed rows instead of tensor planes.
 fn min_eigenvalue_scores(
     gx: &ImageBuffer<Luma<i16>, Vec<i16>>,
     gy: &ImageBuffer<Luma<i16>, Vec<i16>>,
-) -> Vec<(u32, u32, f32)> {
+) -> Vec<f32> {
     let (width, height) = gx.dimensions();
     let (w, h) = (width as usize, height as usize);
-    let mut features = Vec::with_capacity(w * h);
+    let mut scores = vec![0.0f32; w * h];
     if w == 0 || h == 0 {
-        return features;
+        return scores;
     }
 
     let (gx, gy) = (gx.as_raw(), gy.as_raw());
@@ -285,7 +287,6 @@ fn min_eigenvalue_scores(
     // Horizontal sums of the rows above, at and below y, stored at row % 3.
     let mut ring = [TensorRow::new(w), TensorRow::new(w), TensorRow::new(w)];
     let mut window = TensorRow::new(w);
-    let mut scores = vec![0.0f32; w];
 
     horizontal_tensor_row(&gx[row(0)], &gy[row(0)], &mut products, &mut ring[0]);
     for y in 0..h {
@@ -296,12 +297,10 @@ fn min_eigenvalue_scores(
         let above = (y > 0).then(|| &ring[(y + 2) % 3]);
         let below = (y + 1 < h).then(|| &ring[(y + 1) % 3]);
         window.sum_rows(above, &ring[y % 3], below);
-        let y = y as u32;
-        score_row(&window, y, height, &mut scores);
-        features.extend((0..width).zip(&scores).map(|(x, &score)| (x, y, score)));
+        score_row(&window, y as u32, height, &mut scores[row(y)]);
     }
 
-    features
+    scores
 }
 
 /// Normalized minimum eigenvalues of one row of 3x3 window sums.
@@ -340,43 +339,63 @@ fn scaled_min_eigenvalue(a: i32, b: i32, c: i32, normalization: f32) -> f32 {
     if determinant > 0 { score } else { 0.0 }
 }
 
-fn non_maximum_suppression(features: &mut Vec<(u32, u32, f32)>, width: u32, height: u32) {
-    let mut is_local_max = vec![false; features.len()];
-
-    for y in 1..height - 1 {
-        for x in 1..width - 1 {
-            let idx = (y * width + x) as usize;
-            let current = features[idx].2;
-
-            let mut is_max = true;
-            for dy in -1..=1 {
-                for dx in -1..=1 {
-                    if dx == 0 && dy == 0 {
-                        continue;
-                    }
-                    let nx = x as i32 + dx;
-                    let ny = y as i32 + dy;
-                    if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
-                        continue;
-                    }
-                    let neighbor_idx = (ny as u32 * width + nx as u32) as usize;
-                    if features[neighbor_idx].2 > current {
-                        is_max = false;
-                        break;
-                    }
-                }
-                if !is_max {
-                    break;
-                }
-            }
-            is_local_max[idx] = is_max;
+/// A score below which no pixel can pass the quality filter, so NMS may skip it.
+///
+/// The quality threshold is relative to the strongest local maximum. A global
+/// maximum inside the image is one, which fixes the threshold before NMS. NMS
+/// never selects border pixels, so a maximum found only on the border does not;
+/// nothing beyond non-positive scores is skipped then.
+fn quality_floor(scores: &[f32], width: usize, height: usize, quality_level: f32) -> f32 {
+    let (mut interior, mut border) = (0.0f32, 0.0f32);
+    for (y, row) in scores.chunks_exact(width).enumerate() {
+        if y == 0 || y + 1 == height {
+            border = row.iter().fold(border, |max, &score| max.max(score));
+        } else {
+            let inner = &row[1..width - 1];
+            interior = inner.iter().fold(interior, |max, &score| max.max(score));
+            border = border.max(row[0]).max(row[width - 1]);
         }
     }
+    if interior >= border {
+        quality_level * interior
+    } else {
+        0.0
+    }
+}
 
-    features.retain(|(x, y, _)| {
-        let idx = (y * width + x) as usize;
-        is_local_max[idx]
-    });
+/// Positive interior local maxima at or above `floor`, in row-major order. A
+/// pixel is kept when no 8-neighbor has a greater score, so plateaus survive;
+/// it equals the maximum of its 3x3 neighborhood, computed separably.
+fn local_maxima(scores: &[f32], width: usize, height: usize, floor: f32) -> Vec<(u32, u32, f32)> {
+    let mut maxima = Vec::new();
+    if width < 3 || height < 3 {
+        return maxima;
+    }
+    let row = |y: usize| &scores[y * width..(y + 1) * width];
+    // Horizontal 3-pixel maxima for the interior columns of rows y - 1, y and
+    // y + 1, stored at row % 3.
+    let mut ring: [Vec<f32>; 3] = std::array::from_fn(|_| vec![0.0; width - 2]);
+    max_row_3(row(0), &mut ring[0]);
+    max_row_3(row(1), &mut ring[1]);
+    for y in 1..height - 1 {
+        max_row_3(row(y + 1), &mut ring[(y + 1) % 3]);
+        let (above, center, below) = (&ring[(y + 2) % 3], &ring[y % 3], &ring[(y + 1) % 3]);
+        for (i, &score) in row(y)[1..width - 1].iter().enumerate() {
+            let neighborhood = above[i].max(center[i]).max(below[i]);
+            if score > 0.0 && score >= floor && score == neighborhood {
+                maxima.push((i as u32 + 1, y as u32, score));
+            }
+        }
+    }
+    maxima
+}
+
+/// `dst[i] = max(src[i], src[i + 1], src[i + 2])`, one value per interior column.
+fn max_row_3(src: &[f32], dst: &mut [f32]) {
+    let windows = src.iter().zip(&src[1..]).zip(&src[2..]);
+    for (value, ((&left, &center), &right)) in dst.iter_mut().zip(windows) {
+        *value = left.max(center).max(right);
+    }
 }
 
 fn filter_by_quality(features: &mut Vec<(u32, u32, f32)>, quality_level: f32) {
@@ -443,21 +462,19 @@ mod tests {
 
     type Plane = ImageBuffer<Luma<i32>, Vec<i32>>;
 
-    /// Scores of full-image window-sum planes, through the production row scorer.
-    fn scores_of_window_planes(a: &Plane, b: &Plane, c: &Plane) -> Vec<(u32, u32, f32)> {
+    /// Score plane of full-image window-sum planes, via the production row scorer.
+    fn scores_of_window_planes(a: &Plane, b: &Plane, c: &Plane) -> Vec<f32> {
         let (width, height) = a.dimensions();
-        let mut features = Vec::new();
+        let mut scores = vec![0.0; (width * height) as usize];
         let mut window = TensorRow::new(width as usize);
-        let mut scores = vec![0.0; width as usize];
         for y in 0..height {
             let row = (y * width) as usize..((y + 1) * width) as usize;
             window.xx.copy_from_slice(&a.as_raw()[row.clone()]);
             window.yy.copy_from_slice(&b.as_raw()[row.clone()]);
-            window.xy.copy_from_slice(&c.as_raw()[row]);
-            score_row(&window, y, height, &mut scores);
-            features.extend((0..width).zip(&scores).map(|(x, &score)| (x, y, score)));
+            window.xy.copy_from_slice(&c.as_raw()[row.clone()]);
+            score_row(&window, y, height, &mut scores[row]);
         }
-        features
+        scores
     }
 
     #[test]
@@ -514,7 +531,7 @@ mod tests {
             box_sum_3x3_in_place(&mut b);
             let scores = scores_of_window_planes(&a, &b, &c);
             assert_eq!(scores.len(), (width * height) as usize);
-            assert!(scores.iter().all(|p| p.2 == 1.0));
+            assert!(scores.iter().all(|&score| score == 1.0));
         }
     }
 
@@ -525,7 +542,80 @@ mod tests {
         let c = ImageBuffer::new(3, 3);
         let scores = scores_of_window_planes(&a, &b, &c);
         let expected = 1.0 / (32.0 * 32.0 * 9.0);
-        assert_eq!(scores[4], (1, 1, expected));
+        assert_eq!(scores[4], expected);
+    }
+
+    /// Positive interior pixels without a strictly greater 8-neighbor.
+    fn brute_force_maxima(scores: &[f32], width: usize, height: usize) -> Vec<(u32, u32, f32)> {
+        let mut maxima = Vec::new();
+        for y in 1..height.saturating_sub(1) {
+            for x in 1..width.saturating_sub(1) {
+                let score = scores[y * width + x];
+                let neighbor = |nx: usize, ny: usize| scores[ny * width + nx];
+                let is_max =
+                    (y - 1..=y + 1).all(|ny| (x - 1..=x + 1).all(|nx| neighbor(nx, ny) <= score));
+                if score > 0.0 && is_max {
+                    maxima.push((x as u32, y as u32, score));
+                }
+            }
+        }
+        maxima
+    }
+
+    #[test]
+    fn local_maxima_match_brute_force_with_ties_and_floors() {
+        let mut state = 0x2545_f491u32;
+        for (width, height) in [(3, 3), (4, 3), (3, 7), (8, 5), (17, 11)] {
+            for levels in [2, 4, 1000] {
+                // Few distinct levels produce plateaus; zero scores are never maxima.
+                let scores: Vec<f32> = (0..width * height)
+                    .map(|_| {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        (state % levels) as f32
+                    })
+                    .collect();
+                let expected = brute_force_maxima(&scores, width, height);
+                assert_eq!(local_maxima(&scores, width, height, 0.0), expected);
+                for floor in [0.5, 1.0, 3.0, 999.0] {
+                    let mut above = expected.clone();
+                    above.retain(|p| p.2 >= floor);
+                    assert_eq!(local_maxima(&scores, width, height, floor), above);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plateau_pixels_are_all_kept() {
+        #[rustfmt::skip]
+        let scores = [
+            0.0, 0.0, 0.0, 0.0,
+            0.0, 2.0, 2.0, 0.0,
+            0.0, 0.0, 0.0, 0.0,
+        ];
+        assert_eq!(local_maxima(&scores, 4, 3, 0.0), [(1, 1, 2.0), (2, 1, 2.0)]);
+    }
+
+    #[test]
+    fn quality_floor_is_skipped_when_the_maximum_is_only_on_the_border() {
+        // The border pixel (0, 0) suppresses (1, 1); the strongest local maximum
+        // is (3, 2), so a floor from the global maximum would drop it.
+        #[rustfmt::skip]
+        let scores = [
+            9.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 5.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 2.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        assert_eq!(quality_floor(&scores, 5, 4, 0.5), 0.0);
+        assert_eq!(local_maxima(&scores, 5, 4, 0.0), [(3, 2, 2.0)]);
+
+        let mut interior = scores;
+        interior[0] = 1.0;
+        assert_eq!(quality_floor(&interior, 5, 4, 0.5), 2.5);
+        assert_eq!(local_maxima(&interior, 5, 4, 2.5), [(1, 1, 5.0)]);
     }
 
     #[test]
