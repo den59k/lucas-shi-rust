@@ -36,6 +36,12 @@
   See [timings, confidence intervals and output comparisons](benches/results/scoring-performance-2026-10-17.md).
   These figures compare against the full-plane detector before this work and
   were recorded before merging the `DetectorContext` changes below.
+- Measured again on `main` after that merge with the OpenCV comparison harness
+  (bundled 720×405 frame, Ryzen 9 9900X, medians of 100 calls): detection
+  1.03 → 0.77 ms native and 1.61 → 0.76 ms in wasm with `simd128`. The scalar
+  wasm build is slightly slower, 3.15 → 3.39 ms. Every corner the crate finds
+  now lies within 1.5 px of an OpenCV Scharr corner, up from 97%, and 99% of
+  OpenCV's corners have a crate corner within 1.5 px, up from 86%.
 - On x86, an AVX2 copy of the detector pipeline is selected at runtime.
 - Tracking: window sampling now hoists the bilinear weights, reads contiguous
   row slices and accumulates in lanes the compiler vectorizes, with a

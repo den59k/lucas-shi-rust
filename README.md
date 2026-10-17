@@ -100,14 +100,15 @@ calls on an AMD Ryzen 9 9900X. The harness, parameters and caveats are in
 
 | | Detect, ms | Track 200 points, ms |
 |---|---:|---:|
-| this crate, wasm `simd128` | 1.6 | 4.2 |
-| OpenCV.js 4.11 (wasm, scalar build) | 2.4 | 5.8 |
-| this crate, native (AVX2) | 1.0 | 3.3 |
+| this crate, wasm `simd128` | 0.8 | 4.2 |
+| OpenCV.js 4.11 (wasm, scalar build) | 2.5 | 5.8 |
+| this crate, native (AVX2) | 0.8 | 3.4 |
 | OpenCV native, 1 thread | 2.0 | 2.3 |
 
-Corners agree with OpenCV's to the pixel: 97% of this crate's corners have an
-OpenCV Scharr corner within 1.5 px. Tracked endpoints agree to a median of
-0.004 px on points both libraries track.
+Corners agree with OpenCV's to the pixel: every corner this crate finds has an
+OpenCV Scharr corner within 1.5 px, and 99% of OpenCV's have one of this
+crate's. Tracked endpoints agree to a median of 0.004 px on points both
+libraries track.
 
 ## Live demo
 
