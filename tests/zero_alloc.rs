@@ -6,35 +6,39 @@
 //! does not affect the library or other tests).
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, DetectorCapacity, DetectorContext,
-    FloatDetectorContext, FloatImageView, ScoreThreshold, TrackerCapacity, TrackerContext,
+    FloatDetectorContext, FloatImageView, FloatTrackerContext, ScoreThreshold, TrackerCapacity,
+    TrackerContext,
 };
-
-/// The allocation counter is global, so measured sections must not overlap.
-static SERIAL: Mutex<()> = Mutex::new(());
 
 struct CountingAllocator;
 
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-static COUNTING: AtomicBool = AtomicBool::new(false);
+// Per thread, so tests running in parallel do not count each other's
+// allocations. Const-initialized `Cell`s need no allocation to access.
+thread_local! {
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    static ALLOCS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn record() {
+    let counting = COUNTING.try_with(Cell::get).unwrap_or(false);
+    if counting {
+        let _ = ALLOCS.try_with(|allocs| allocs.set(allocs.get() + 1));
+    }
+}
 
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        record();
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        record();
         unsafe { System.alloc_zeroed(layout) }
     }
 
@@ -43,9 +47,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::Relaxed) {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
-        }
+        record();
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -53,13 +55,13 @@ unsafe impl GlobalAlloc for CountingAllocator {
 #[global_allocator]
 static GLOBAL: CountingAllocator = CountingAllocator;
 
-/// Allocations performed by `f`. The caller holds `SERIAL`.
+/// Heap allocations `f` performs on the calling thread.
 fn allocations<R>(f: impl FnOnce() -> R) -> (usize, R) {
-    ALLOCS.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
+    ALLOCS.with(|allocs| allocs.set(0));
+    COUNTING.with(|counting| counting.set(true));
     let result = f();
-    COUNTING.store(false, Ordering::Relaxed);
-    (ALLOCS.load(Ordering::Relaxed), result)
+    COUNTING.with(|counting| counting.set(false));
+    (ALLOCS.with(Cell::get), result)
 }
 
 fn textured(w: u32, h: u32, seed: u32) -> GrayImage {
@@ -89,10 +91,6 @@ fn steady_state_track_is_allocation_free() {
 
     let mut ctx = TrackerContext::new();
 
-    // Hold the lock across warm-up too: the counter sees every thread's
-    // allocations, so another test's warm-up must not overlap a measurement.
-    let _serial = SERIAL.lock().unwrap();
-
     // Warm-up: lets every buffer grow to its steady-state capacity.
     for _ in 0..3 {
         ctx.prepare(&prev, &next, 4);
@@ -106,20 +104,17 @@ fn steady_state_track_is_allocation_free() {
     }
 
     // Measured steady-state step.
-    ALLOCS.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
-    ctx.prepare(&prev, &next, 4);
-    let results = ctx.track(
-        &points,
-        Some(&predicted),
-        21,
-        30,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    );
-    let n = results.len();
-    COUNTING.store(false, Ordering::Relaxed);
-
-    let allocs = ALLOCS.load(Ordering::Relaxed);
+    let (allocs, n) = allocations(|| {
+        ctx.prepare(&prev, &next, 4);
+        ctx.track(
+            &points,
+            Some(&predicted),
+            21,
+            30,
+            DEFAULT_MIN_EIGEN_THRESHOLD,
+        )
+        .len()
+    });
     assert_eq!(n, points.len());
     assert_eq!(
         allocs, 0,
@@ -136,21 +131,17 @@ fn steady_state_detection_is_allocation_free() {
 
     let mut ctx = DetectorContext::new();
 
-    let _serial = SERIAL.lock().unwrap();
-
     // Warm-up: lets every buffer grow to its steady-state capacity.
     for _ in 0..3 {
         ctx.detect(&img, 0.01, 8);
         ctx.detect_grid(&img, 6, 4, 5, 0.01, 8, &existing);
     }
 
-    ALLOCS.store(0, Ordering::Relaxed);
-    COUNTING.store(true, Ordering::Relaxed);
-    let plain = ctx.detect(&img, 0.01, 8).len();
-    let grid = ctx.detect_grid(&img, 6, 4, 5, 0.01, 8, &existing).len();
-    COUNTING.store(false, Ordering::Relaxed);
-
-    let allocs = ALLOCS.load(Ordering::Relaxed);
+    let (allocs, (plain, grid)) = allocations(|| {
+        let plain = ctx.detect(&img, 0.01, 8).len();
+        let grid = ctx.detect_grid(&img, 6, 4, 5, 0.01, 8, &existing).len();
+        (plain, grid)
+    });
     assert!(
         plain > 0 && grid > 0,
         "detector found nothing on a textured image"
@@ -177,7 +168,6 @@ fn reserved_detection_does_not_allocate_on_any_content() {
         GrayImage::from_pixel(640, 480, Luma([90])),
     ];
     let existing = lattice(50);
-    let _serial = SERIAL.lock().unwrap();
 
     // Zero spacing reserves for every interior pixel being a result.
     let mut ctx = DetectorContext::with_capacity(DetectorCapacity {
@@ -233,7 +223,6 @@ fn reserved_tracking_does_not_allocate_with_varying_points() {
     let next = textured(640, 480, 8);
     let points = lattice(300);
     let predicted: Vec<(f32, f32)> = points.iter().map(|&(x, y)| (x + 0.5, y - 0.25)).collect();
-    let _serial = SERIAL.lock().unwrap();
 
     let mut ctx = TrackerContext::with_capacity(TrackerCapacity {
         width: 640,
@@ -292,7 +281,6 @@ fn steady_state_track_fb_is_allocation_free() {
         .map(|(x, y)| (x * 0.5, y * 0.5))
         .collect::<Vec<_>>();
     let mut ctx = TrackerContext::new();
-    let _serial = SERIAL.lock().unwrap();
     for _ in 0..2 {
         ctx.prepare(&prev, &next, 3);
         ctx.track_fb(
@@ -334,7 +322,6 @@ fn reserved_float_detection_does_not_allocate_on_any_content() {
         })
         .collect();
     let existing = lattice(50);
-    let _serial = SERIAL.lock().unwrap();
     let mut ctx = FloatDetectorContext::with_capacity(DetectorCapacity {
         width: 640,
         height: 480,
@@ -355,4 +342,40 @@ fn reserved_float_detection_does_not_allocate_on_any_content() {
     });
     assert!(dense > 10_000, "dense case found only {dense}");
     assert_eq!(allocs, 0, "reserved f32 detection allocated {allocs} times");
+}
+
+#[test]
+fn reserved_float_tracking_does_not_allocate_with_varying_points() {
+    let celsius = |seed| -> Vec<f32> {
+        textured(640, 480, seed)
+            .as_raw()
+            .iter()
+            .map(|&v| 30.0 + v as f32 * 0.004)
+            .collect()
+    };
+    let (prev, next) = (celsius(14), celsius(15));
+    let points = lattice(300);
+    let mut ctx = FloatTrackerContext::with_capacity(TrackerCapacity {
+        width: 640,
+        height: 480,
+        levels: 4,
+        window_size: 21,
+        points: points.len(),
+    });
+    let (allocs, tracked) = allocations(|| {
+        let (prev, next) = (
+            FloatImageView::new(&prev, 640, 480).unwrap(),
+            FloatImageView::new(&next, 640, 480).unwrap(),
+        );
+        ctx.prepare(prev, next, 4);
+        let mut tracked = ctx.track(&points, None, 21, 30, 1e-6).len();
+        tracked += ctx
+            .track_fb(&points[..120], None, 15, 15, 0.0, DEFAULT_FB_THRESHOLD)
+            .len();
+        ctx.prepare(next, prev, 4);
+        tracked += ctx.track(&points[..7], None, 7, 5, 1e-6).len();
+        tracked
+    });
+    assert_eq!(tracked, 300 + 120 + 7);
+    assert_eq!(allocs, 0, "reserved f32 tracking allocated {allocs} times");
 }

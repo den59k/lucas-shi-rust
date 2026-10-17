@@ -8,7 +8,8 @@
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackResult, TrackStatus, build_pyramid,
+    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, FloatDetectorContext, FloatImageView,
+    FloatTrackerContext, ScoreThreshold, TrackResult, TrackStatus, build_pyramid,
     calc_optical_flow_ex, calc_optical_flow_fb, good_features_to_track,
     good_features_to_track_grid,
 };
@@ -241,6 +242,89 @@ fn tracking_lines() -> Vec<String> {
     lines
 }
 
+/// A real-valued thermal-like frame in °C: smooth gradients, two warm bodies
+/// and fine texture of a few hundredths of a kelvin, shifted by `(sx, sy)`.
+fn thermal_frame(w: u32, h: u32, (sx, sy): (f32, f32)) -> Vec<f32> {
+    (0..w * h)
+        .map(|i| {
+            let x = (i % w) as f32 - sx;
+            let y = (i / w) as f32 - sy;
+            let blob = |cx: f32, cy: f32, r: f32, t: f32| {
+                t / (1.0 + ((x - cx).powi(2) + (y - cy).powi(2)) / (r * r))
+            };
+            let texture =
+                (x * 0.37).sin() * (y * 0.29).cos() * 0.04 + (x * 0.11 + y * 0.07).sin() * 0.02;
+            22.5 + 0.01 * x + blob(80.0, 60.0, 14.0, 6.0) + blob(200.0, 150.0, 25.0, 1.5) + texture
+        })
+        .collect()
+}
+
+/// f32 detector and tracker on real-valued frames, which no 8-bit fixture
+/// covers.
+fn float_lines() -> Vec<String> {
+    let (w, h) = (256u32, 192u32);
+    let prev = thermal_frame(w, h, (0.0, 0.0));
+    let prev_view = FloatImageView::new(&prev, w, h).unwrap();
+    let mut lines = Vec::new();
+    let mut detector = FloatDetectorContext::new();
+    let mut points = Vec::new();
+    for threshold in [
+        ScoreThreshold::absolute(0.0),
+        ScoreThreshold::absolute(1e-5),
+        ScoreThreshold::absolute(1e-4).with_relative(0.05),
+    ] {
+        for distance in [0u32, 6] {
+            let corners = detector.detect(prev_view, threshold, distance);
+            lines.push(corners_line(
+                format!(
+                    "float_detect a={} r={} d={distance}",
+                    threshold.absolute_part(),
+                    threshold.relative_part()
+                ),
+                corners,
+            ));
+            if distance == 6 && threshold == ScoreThreshold::absolute(1e-5) {
+                let corners = corners.iter().take(80);
+                points = corners.map(|&(x, y, _)| (x as f32, y as f32)).collect();
+            }
+        }
+    }
+    let existing = [(80.0, 60.0), (10.5, 180.0)];
+    let threshold = ScoreThreshold::absolute(1e-5);
+    let corners = detector.detect_grid(prev_view, 4, 3, 6, threshold, 8, &existing);
+    lines.push(corners_line(
+        "float_detect grid 4x3 b=6 e=2".into(),
+        corners,
+    ));
+
+    let mut tracker = FloatTrackerContext::new();
+    for shift in [(0.35f32, -0.6f32), (4.0, 2.5)] {
+        let next = thermal_frame(w, h, shift);
+        let next_view = FloatImageView::new(&next, w, h).unwrap();
+        for (levels, window, iterations) in [(1usize, 9usize, 10usize), (3, 15, 15)] {
+            tracker.prepare(prev_view, next_view, levels);
+            let id = |kind: &str| {
+                format!(
+                    "{kind} s=({},{}) l={levels} w={window} i={iterations}",
+                    shift.0, shift.1
+                )
+            };
+            let results = tracker.track(&points, None, window, iterations, 1e-6);
+            lines.push(tracks_line(id("float_track"), results));
+            let results = tracker.track_fb(
+                &points,
+                None,
+                window,
+                iterations,
+                1e-6,
+                DEFAULT_FB_THRESHOLD,
+            );
+            lines.push(tracks_line(id("float_track_fb"), results));
+        }
+    }
+    lines
+}
+
 fn check(section: &str, actual: Vec<String>) {
     let expected: Vec<&str> = FIXTURE
         .lines()
@@ -268,7 +352,9 @@ fn check(section: &str, actual: Vec<String>) {
 }
 
 fn kind_section(kind: &str) -> &'static str {
-    if kind.starts_with("track") {
+    if kind.starts_with("float") {
+        "float"
+    } else if kind.starts_with("track") {
         "tracking"
     } else {
         "detection"
@@ -279,15 +365,18 @@ fn kind_section(kind: &str) -> &'static str {
 fn outputs_match_fixtures() {
     let detection = detection_lines();
     let tracking = tracking_lines();
+    let float = float_lines();
     if std::env::var_os("REGRESSION_BLESS").is_some() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/regression.txt");
-        let mut text = detection.join("\n");
-        text.push('\n');
-        text.push_str(&tracking.join("\n"));
-        text.push('\n');
+        let mut text = String::new();
+        for line in detection.iter().chain(&tracking).chain(&float) {
+            text.push_str(line);
+            text.push('\n');
+        }
         std::fs::write(path, text).expect("write regression fixtures");
         return;
     }
     check("detection", detection);
     check("tracking", tracking);
+    check("float", float);
 }

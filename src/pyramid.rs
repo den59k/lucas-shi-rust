@@ -1,4 +1,6 @@
-use image::{GrayImage, ImageBuffer, Pixel};
+use image::{GrayImage, ImageBuffer, Luma, Pixel};
+
+use crate::float_image::FloatImageView;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 use std::arch::wasm32::*;
 
@@ -58,6 +60,51 @@ pub fn build_pyramid_into(image: &GrayImage, levels: usize, pyramid: &mut Vec<Gr
     }
 
     pyramid.truncate(produced);
+}
+
+/// Builds the f32 pyramid of `image` into `pyramid` with the same level sizes
+/// as [`build_pyramid_into`]. Each level holds exact 2x2 means (up to f32
+/// rounding) instead of truncated ones. Reuses level storage like
+/// [`build_pyramid_into`].
+pub(crate) fn build_float_pyramid_into(
+    image: FloatImageView<'_>,
+    levels: usize,
+    pyramid: &mut Vec<ImageBuffer<Luma<f32>, Vec<f32>>>,
+) {
+    let (width, height) = image.dimensions();
+    ensure_level(pyramid, 0, width, height);
+    pyramid[0].copy_from_slice(image.pixels());
+
+    let mut produced = 1;
+    for level in 1..levels {
+        let (prev_w, prev_h) = pyramid[level - 1].dimensions();
+        if prev_w < 2 || prev_h < 2 {
+            break;
+        }
+        let (new_w, new_h) = (prev_w / 2, prev_h / 2);
+        ensure_level(pyramid, level, new_w, new_h);
+        let (head, tail) = pyramid.split_at_mut(level);
+        downsample_2x2_f32(
+            head[level - 1].as_raw(),
+            prev_w as usize,
+            new_w as usize,
+            new_h as usize,
+            &mut tail[0],
+        );
+        produced += 1;
+    }
+    pyramid.truncate(produced);
+}
+
+/// Means of 2x2 blocks of `src` (`prev_w` wide) into `new_w * new_h` pixels.
+fn downsample_2x2_f32(src: &[f32], prev_w: usize, new_w: usize, new_h: usize, dst: &mut [f32]) {
+    for (y, out) in dst.chunks_exact_mut(new_w).take(new_h).enumerate() {
+        let (top, _) = src[2 * y * prev_w..][..2 * new_w].as_chunks::<2>();
+        let (bottom, _) = src[(2 * y + 1) * prev_w..][..2 * new_w].as_chunks::<2>();
+        for (value, (top, bottom)) in out.iter_mut().zip(top.iter().zip(bottom)) {
+            *value = ((top[0] + top[1]) + (bottom[0] + bottom[1])) * 0.25;
+        }
+    }
 }
 
 /// Downsamples `src` (`prev_w` wide) by averaging each 2x2 block into one output
@@ -242,6 +289,32 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn float_pyramid_holds_exact_means_with_the_8_bit_level_sizes() {
+        for (w, h) in [(64u32, 48u32), (65, 49), (37, 71), (3, 3), (1, 9)] {
+            let img = make_image(w, h);
+            let pixels: Vec<f32> = img.as_raw().iter().map(|&v| v as f32).collect();
+            let view = FloatImageView::new(&pixels, w, h).unwrap();
+            let mut pyramid = Vec::new();
+            build_float_pyramid_into(view, 5, &mut pyramid);
+            let sizes: Vec<_> = pyramid.iter().map(|level| level.dimensions()).collect();
+            let expected: Vec<_> = build_pyramid(&img, 5)
+                .iter()
+                .map(|level| level.dimensions())
+                .collect();
+            assert_eq!(sizes, expected);
+            assert_eq!(pyramid[0].as_raw(), &pixels);
+            for pair in pyramid.windows(2) {
+                let (fine, coarse) = (&pair[0], &pair[1]);
+                for (x, y, value) in coarse.enumerate_pixels() {
+                    let p = |dx, dy| fine.get_pixel(2 * x + dx, 2 * y + dy)[0] as f64;
+                    let mean = (p(0, 0) + p(1, 0) + p(0, 1) + p(1, 1)) / 4.0;
+                    assert!((value[0] as f64 - mean).abs() <= mean.abs() * 1e-6);
+                }
+            }
+        }
     }
 
     #[test]

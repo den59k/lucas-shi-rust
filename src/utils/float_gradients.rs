@@ -46,6 +46,35 @@ pub fn scharr_f32_into(
     }
 }
 
+/// [`scharr_f32_into`], compiled for AVX2 when the CPU supports it. For
+/// callers that are not already inside an AVX2 function.
+pub fn scharr_f32(
+    pixels: &[f32],
+    width: usize,
+    height: usize,
+    grad_x: &mut [f32],
+    grad_y: &mut [f32],
+) {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if is_x86_feature_detected!("avx2") {
+        // SAFETY: guarded by the runtime feature check.
+        return unsafe { scharr_f32_avx2(pixels, width, height, grad_x, grad_y) };
+    }
+    scharr_f32_into(pixels, width, height, grad_x, grad_y)
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn scharr_f32_avx2(
+    pixels: &[f32],
+    width: usize,
+    height: usize,
+    grad_x: &mut [f32],
+    grad_y: &mut [f32],
+) {
+    scharr_f32_into(pixels, width, height, grad_x, grad_y)
+}
+
 /// Gradients of one row's interior pixels from the rows above, at and below.
 #[inline(always)]
 fn scharr_row(up: &[f32], middle: &[f32], down: &[f32], gx: &mut [f32], gy: &mut [f32]) {

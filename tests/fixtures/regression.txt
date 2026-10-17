@@ -769,3 +769,18 @@ track_fb s=(12.5,-7.25) l=3 w=15 i=15 n=108 tracked=25 c8b936d4551d1b50
 track s=(12.5,-7.25) l=4 w=21 i=30 n=108 tracked=49 b29ead7197178eb2
 track_guess s=(12.5,-7.25) l=4 w=21 i=30 n=108 tracked=76 4a5203c69726cd5d
 track_fb s=(12.5,-7.25) l=4 w=21 i=30 n=108 tracked=34 108f703d76a66896
+float_detect a=0 r=0 d=0 n=844 cc92c10ab32543ea
+float_detect a=0 r=0 d=6 n=591 de98e9ed77ce4809
+float_detect a=0.00001 r=0 d=0 n=433 280e1cd32848bf2a
+float_detect a=0.00001 r=0 d=6 n=353 82f0729518df5a0a
+float_detect a=0.0001 r=0.05 d=0 n=1 d69264934ab4d87d
+float_detect a=0.0001 r=0.05 d=6 n=1 d69264934ab4d87d
+float_detect grid 4x3 b=6 e=2 n=70 0824f228ea83be8e
+float_track s=(0.35,-0.6) l=1 w=9 i=10 n=80 tracked=78 0468e01d2cf8a73b
+float_track_fb s=(0.35,-0.6) l=1 w=9 i=10 n=80 tracked=78 0468e01d2cf8a73b
+float_track s=(0.35,-0.6) l=3 w=15 i=15 n=80 tracked=70 ec824d526a0f1a4f
+float_track_fb s=(0.35,-0.6) l=3 w=15 i=15 n=80 tracked=70 ec824d526a0f1a4f
+float_track s=(4,2.5) l=1 w=9 i=10 n=80 tracked=74 0a93bd820cc4153b
+float_track_fb s=(4,2.5) l=1 w=9 i=10 n=80 tracked=74 0a93bd820cc4153b
+float_track s=(4,2.5) l=3 w=15 i=15 n=80 tracked=69 d8a88714a6e6ffc0
+float_track_fb s=(4,2.5) l=3 w=15 i=15 n=80 tracked=69 d8a88714a6e6ffc0
