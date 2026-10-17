@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, DetectorCapacity, DetectorContext,
-    TrackerCapacity, TrackerContext,
+    FloatDetectorContext, FloatImageView, ScoreThreshold, TrackerCapacity, TrackerContext,
 };
 
 /// The allocation counter is global, so measured sections must not overlap.
@@ -318,4 +318,41 @@ fn steady_state_track_fb_is_allocation_free() {
     });
     assert_eq!(n, points.len());
     assert_eq!(allocs, 0, "steady-state track_fb allocated {allocs} times");
+}
+
+#[test]
+fn reserved_float_detection_does_not_allocate_on_any_content() {
+    let frames: Vec<(u32, u32, Vec<f32>)> = [(640u32, 480u32, 11u32), (320, 240, 12), (5, 4, 13)]
+        .into_iter()
+        .map(|(w, h, seed)| {
+            let pixels = textured(w, h, seed)
+                .as_raw()
+                .iter()
+                .map(|&v| 20.0 + v as f32 * 0.01)
+                .collect();
+            (w, h, pixels)
+        })
+        .collect();
+    let existing = lattice(50);
+    let _serial = SERIAL.lock().unwrap();
+    let mut ctx = FloatDetectorContext::with_capacity(DetectorCapacity {
+        width: 640,
+        height: 480,
+        min_distance: 0,
+        grid_cells: 24,
+        existing_points: existing.len(),
+    });
+    let threshold = ScoreThreshold::absolute(0.0);
+    let (allocs, dense) = allocations(|| {
+        let mut dense = 0;
+        for (w, h, pixels) in &frames {
+            let image = FloatImageView::new(pixels, *w, *h).unwrap();
+            dense = dense.max(ctx.detect(image, threshold, 0).len());
+            ctx.detect(image, threshold.with_relative(0.01), 8);
+            ctx.detect_grid(image, 6, 4, 5, threshold, 0, &existing);
+        }
+        dense
+    });
+    assert!(dense > 10_000, "dense case found only {dense}");
+    assert_eq!(allocs, 0, "reserved f32 detection allocated {allocs} times");
 }

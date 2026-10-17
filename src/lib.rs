@@ -8,6 +8,8 @@
 //! Designed to be compatible with WebAssembly (Wasm).
 
 mod features;
+mod float_features;
+mod float_image;
 mod lk;
 mod pyramid;
 mod utils;
@@ -16,6 +18,8 @@ mod utils;
 pub use features::{
     DetectorCapacity, DetectorContext, good_features_to_track, good_features_to_track_grid,
 };
+pub use float_features::{FloatDetectorContext, ScoreThreshold};
+pub use float_image::{FloatImageError, FloatImageView};
 #[allow(deprecated)]
 pub use lk::calc_optical_flow;
 pub use lk::{

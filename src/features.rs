@@ -2,7 +2,7 @@ use image::GrayImage;
 use std::cmp::Ordering;
 
 use crate::utils::{
-    box_filter_3x3::{sum_row_3, sum_rows_3},
+    box_filter_3x3::{sum_row_3, sum_row_3_f64, sum_rows_3, sum_rows_3_f64},
     fast_gradients::compute_gradients_into,
 };
 
@@ -147,7 +147,7 @@ pub(crate) fn reserve_total<T>(buffer: &mut Vec<T>, total: usize) {
 /// create a context per call.
 #[derive(Default)]
 pub struct DetectorContext {
-    planes: Planes,
+    planes: Planes<i32>,
     selection: Selection,
 }
 
@@ -243,20 +243,21 @@ pub(crate) fn sort_by_score(candidates: &mut [(u32, u32, f32)]) {
     });
 }
 
-/// The per-pixel stages of the detector and their buffers.
+/// The per-pixel stages of a detector and their buffers, for tensor sums of
+/// type `T`.
 #[derive(Default)]
-struct Planes {
-    grad_x: Vec<i16>,
-    grad_y: Vec<i16>,
-    tensor: TensorRows,
-    scores: Vec<f32>,
+pub(crate) struct Planes<T: TensorSum> {
+    pub(crate) grad_x: Vec<T::Gradient>,
+    pub(crate) grad_y: Vec<T::Gradient>,
+    pub(crate) tensor: TensorRows<T>,
+    pub(crate) scores: Vec<f32>,
     /// Horizontal 3-pixel score maxima of rows y - 1, y and y + 1 for NMS.
-    maxima_rows: [Vec<f32>; 3],
-    candidates: Vec<(u32, u32, f32)>,
+    pub(crate) maxima_rows: [Vec<f32>; 3],
+    pub(crate) candidates: Vec<(u32, u32, f32)>,
 }
 
-impl Planes {
-    fn reserve(&mut self, capacity: &DetectorCapacity) {
+impl<T: TensorSum> Planes<T> {
+    pub(crate) fn reserve(&mut self, capacity: &DetectorCapacity) {
         let (width, pixels) = (capacity.width as usize, capacity.max_pixels());
         reserve_total(&mut self.grad_x, pixels);
         reserve_total(&mut self.grad_y, pixels);
@@ -267,7 +268,9 @@ impl Planes {
         }
         reserve_total(&mut self.candidates, capacity.max_candidates());
     }
+}
 
+impl Planes<i32> {
     /// Gradients, structure tensor, scores and non-maximum suppression. Leaves
     /// the local maxima that can pass `quality_level` in `candidates`, in
     /// row-major order. The image must be at least 3x3.
@@ -286,12 +289,12 @@ impl Planes {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
-unsafe fn run_avx2(planes: &mut Planes, image: &GrayImage, quality_level: f32) {
+unsafe fn run_avx2(planes: &mut Planes<i32>, image: &GrayImage, quality_level: f32) {
     run_impl(planes, image, quality_level)
 }
 
 #[inline(always)]
-fn run_impl(p: &mut Planes, image: &GrayImage, quality_level: f32) {
+fn run_impl(p: &mut Planes<i32>, image: &GrayImage, quality_level: f32) {
     let (w, h) = (image.width() as usize, image.height() as usize);
     let n = w * h;
     p.grad_x.resize(n, 0);
@@ -562,16 +565,100 @@ impl OccupancyGrid {
     }
 }
 
+/// Accumulator type of the structure tensor and the gradient type it sums:
+/// exact i32 sums of i16 Scharr gradients for 8-bit images, f64 sums of f32
+/// gradients for f32 images. Products of two f32 values are exact in f64.
+pub(crate) trait TensorSum: Copy + Default {
+    type Gradient: Copy;
+
+    /// `(gx * gx, gy * gy, gx * gy)`.
+    fn products(gx: Self::Gradient, gy: Self::Gradient) -> (Self, Self, Self);
+
+    /// Horizontal pass of the 3x3 window sum, see [`sum_row_3`].
+    fn sum_row_3(src: &[Self], dst: &mut [Self]);
+
+    /// Vertical pass of the 3x3 window sum, see [`sum_rows_3`].
+    fn sum_rows_3(
+        above: Option<&[Self]>,
+        center: &[Self],
+        below: Option<&[Self]>,
+        dst: &mut [Self],
+    );
+
+    /// Small eigenvalue of [[a, c], [c, b]] for summed gradient products,
+    /// divided by `normalization`.
+    fn scaled_min_eigenvalue(a: Self, b: Self, c: Self, normalization: f32) -> f32;
+}
+
+impl TensorSum for i32 {
+    type Gradient = i16;
+
+    #[inline(always)]
+    fn products(gx: i16, gy: i16) -> (i32, i32, i32) {
+        let (ix, iy) = (gx as i32, gy as i32);
+        (ix * ix, iy * iy, ix * iy)
+    }
+
+    #[inline(always)]
+    fn sum_row_3(src: &[i32], dst: &mut [i32]) {
+        sum_row_3(src, dst);
+    }
+
+    #[inline(always)]
+    fn sum_rows_3(above: Option<&[i32]>, center: &[i32], below: Option<&[i32]>, dst: &mut [i32]) {
+        sum_rows_3(above, center, below, dst);
+    }
+
+    #[inline(always)]
+    fn scaled_min_eigenvalue(a: i32, b: i32, c: i32, normalization: f32) -> f32 {
+        scaled_min_eigenvalue(a, b, c, normalization)
+    }
+}
+
+impl TensorSum for f64 {
+    type Gradient = f32;
+
+    #[inline(always)]
+    fn products(gx: f32, gy: f32) -> (f64, f64, f64) {
+        let (ix, iy) = (gx as f64, gy as f64);
+        (ix * ix, iy * iy, ix * iy)
+    }
+
+    #[inline(always)]
+    fn sum_row_3(src: &[f64], dst: &mut [f64]) {
+        sum_row_3_f64(src, dst);
+    }
+
+    #[inline(always)]
+    fn sum_rows_3(above: Option<&[f64]>, center: &[f64], below: Option<&[f64]>, dst: &mut [f64]) {
+        sum_rows_3_f64(above, center, below, dst);
+    }
+
+    #[inline(always)]
+    fn scaled_min_eigenvalue(a: f64, b: f64, c: f64, normalization: f32) -> f32 {
+        // As for i32 sums, with the determinant in f64. Products are exact,
+        // so its only rounding comes from the window sums, the two products
+        // and their difference, far below the precision of f32 inputs. Pixel
+        // magnitudes within FloatImageView::MAX_ABS_VALUE keep the determinant
+        // and every f32 intermediate finite.
+        let determinant = a * b - c * c;
+        let (trace, difference, c) = ((a + b) as f32, (a - b) as f32, c as f32);
+        let largest = (trace + (difference * difference + 4.0 * c * c).sqrt()) * 0.5;
+        let score = determinant as f32 / (largest * normalization);
+        if determinant > 0.0 { score } else { 0.0 }
+    }
+}
+
 /// One image row of the structure tensor components `[[xx, xy], [xy, yy]]`:
 /// raw gradient products, or their horizontal or full 3x3 window sums.
 #[derive(Default)]
-struct TensorRow {
-    xx: Vec<i32>,
-    yy: Vec<i32>,
-    xy: Vec<i32>,
+pub(crate) struct TensorRow<T> {
+    xx: Vec<T>,
+    yy: Vec<T>,
+    xy: Vec<T>,
 }
 
-impl TensorRow {
+impl<T: TensorSum> TensorRow<T> {
     #[cfg(test)]
     fn new(width: usize) -> Self {
         let mut row = Self::default();
@@ -581,7 +668,7 @@ impl TensorRow {
 
     fn resize(&mut self, width: usize) {
         for plane in [&mut self.xx, &mut self.yy, &mut self.xy] {
-            plane.resize(width, 0);
+            plane.resize(width, T::default());
         }
     }
 
@@ -591,11 +678,11 @@ impl TensorRow {
         }
     }
 
-    fn planes(&self) -> [&[i32]; 3] {
+    fn planes(&self) -> [&[T]; 3] {
         [&self.xx, &self.yy, &self.xy]
     }
 
-    fn planes_mut(&mut self) -> [&mut [i32]; 3] {
+    fn planes_mut(&mut self) -> [&mut [T]; 3] {
         [&mut self.xx, &mut self.yy, &mut self.xy]
     }
 
@@ -605,7 +692,7 @@ impl TensorRow {
         let (above, below) = (above.map(Self::planes), below.map(Self::planes));
         for (k, dst) in self.planes_mut().into_iter().enumerate() {
             let (a, b) = (above.map(|p| p[k]), below.map(|p| p[k]));
-            sum_rows_3(a, center.planes()[k], b, dst);
+            T::sum_rows_3(a, center.planes()[k], b, dst);
         }
     }
 }
@@ -614,14 +701,14 @@ impl TensorRow {
 /// sums of rows y - 1, y and y + 1 (stored at row % 3), and the 3x3 window
 /// sums of row y.
 #[derive(Default)]
-struct TensorRows {
-    products: TensorRow,
-    ring: [TensorRow; 3],
-    window: TensorRow,
+pub(crate) struct TensorRows<T> {
+    products: TensorRow<T>,
+    ring: [TensorRow<T>; 3],
+    window: TensorRow<T>,
 }
 
-impl TensorRows {
-    fn reserve(&mut self, width: usize) {
+impl<T: TensorSum> TensorRows<T> {
+    pub(crate) fn reserve(&mut self, width: usize) {
         let Self {
             products,
             ring,
@@ -637,7 +724,11 @@ impl TensorRows {
 /// <= 16_646_400 and 3x3 sums <= 149_817_600 fit in i32. Deferring the /32
 /// normalization avoids discarding sub-grey-level gradients before squaring.
 #[inline(always)]
-fn gradient_products_row(gx: &[i16], gy: &[i16], products: &mut TensorRow) {
+fn gradient_products_row<T: TensorSum>(
+    gx: &[T::Gradient],
+    gy: &[T::Gradient],
+    products: &mut TensorRow<T>,
+) {
     let rows = products
         .xx
         .iter_mut()
@@ -645,20 +736,22 @@ fn gradient_products_row(gx: &[i16], gy: &[i16], products: &mut TensorRow) {
         .zip(&mut products.xy)
         .zip(gx.iter().zip(gy));
     for (((xx, yy), xy), (&ix, &iy)) in rows {
-        let (ix, iy) = (ix as i32, iy as i32);
-        *xx = ix * ix;
-        *yy = iy * iy;
-        *xy = ix * iy;
+        (*xx, *yy, *xy) = T::products(ix, iy);
     }
 }
 
 /// Products of one gradient row, summed horizontally over three pixels.
 #[inline(always)]
-fn horizontal_tensor_row(gx: &[i16], gy: &[i16], products: &mut TensorRow, sums: &mut TensorRow) {
+fn horizontal_tensor_row<T: TensorSum>(
+    gx: &[T::Gradient],
+    gy: &[T::Gradient],
+    products: &mut TensorRow<T>,
+    sums: &mut TensorRow<T>,
+) {
     gradient_products_row(gx, gy, products);
-    sum_row_3(&products.xx, &mut sums.xx);
-    sum_row_3(&products.yy, &mut sums.yy);
-    sum_row_3(&products.xy, &mut sums.xy);
+    T::sum_row_3(&products.xx, &mut sums.xx);
+    T::sum_row_3(&products.yy, &mut sums.yy);
+    T::sum_row_3(&products.xy, &mut sums.xy);
 }
 
 /// Minimum eigenvalue of the mean 3x3 structure tensor at every pixel of a
@@ -666,11 +759,11 @@ fn horizontal_tensor_row(gx: &[i16], gy: &[i16], products: &mut TensorRow, sums:
 /// at a time, keeping only three horizontally summed rows instead of tensor
 /// planes.
 #[inline(always)]
-fn min_eigenvalue_scores(
-    gx: &[i16],
-    gy: &[i16],
+pub(crate) fn min_eigenvalue_scores<T: TensorSum>(
+    gx: &[T::Gradient],
+    gy: &[T::Gradient],
     width: usize,
-    rows: &mut TensorRows,
+    rows: &mut TensorRows<T>,
     scores: &mut [f32],
 ) {
     if width == 0 || scores.is_empty() {
@@ -705,7 +798,7 @@ fn min_eigenvalue_scores(
 
 /// Normalized minimum eigenvalues of one row of 3x3 window sums.
 #[inline(always)]
-fn score_row(window: &TensorRow, y: u32, height: u32, scores: &mut [f32]) {
+fn score_row<T: TensorSum>(window: &TensorRow<T>, y: u32, height: u32, scores: &mut [f32]) {
     let width = scores.len();
     let rows = 1 + u32::from(y > 0) + u32::from(y + 1 < height);
     // Eigenvalues scale linearly with a common tensor scale. Divide once by
@@ -714,12 +807,12 @@ fn score_row(window: &TensorRow, y: u32, height: u32, scores: &mut [f32]) {
     let interior = normalization(3);
     let sums = window.xx.iter().zip(&window.yy).zip(&window.xy);
     for (score, ((&a, &b), &c)) in scores.iter_mut().zip(sums) {
-        *score = scaled_min_eigenvalue(a, b, c, interior);
+        *score = T::scaled_min_eigenvalue(a, b, c, interior);
     }
     // Boundary columns average fewer samples; a single column has none beside it.
     let edge = normalization(if width == 1 { 1 } else { 2 });
     for x in [0, width - 1] {
-        scores[x] = scaled_min_eigenvalue(window.xx[x], window.yy[x], window.xy[x], edge);
+        scores[x] = T::scaled_min_eigenvalue(window.xx[x], window.yy[x], window.xy[x], edge);
     }
 }
 
@@ -748,7 +841,12 @@ fn scaled_min_eigenvalue(a: i32, b: i32, c: i32, normalization: f32) -> f32 {
 /// never selects border pixels, so a maximum found only on the border does not;
 /// nothing beyond non-positive scores is skipped then.
 #[inline(always)]
-fn quality_floor(scores: &[f32], width: usize, height: usize, quality_level: f32) -> f32 {
+pub(crate) fn quality_floor(
+    scores: &[f32],
+    width: usize,
+    height: usize,
+    quality_level: f32,
+) -> f32 {
     let (mut interior, mut border) = (0.0f32, 0.0f32);
     for (y, row) in scores.chunks_exact(width).enumerate() {
         if y == 0 || y + 1 == height {
@@ -770,7 +868,7 @@ fn quality_floor(scores: &[f32], width: usize, height: usize, quality_level: f32
 /// so plateaus survive; it equals the maximum of its 3x3 neighborhood, which is
 /// computed separably in `rows`.
 #[inline(always)]
-fn local_maxima(
+pub(crate) fn local_maxima(
     scores: &[f32],
     width: usize,
     height: usize,
@@ -889,7 +987,7 @@ mod tests {
     fn scores_of_window_planes(a: &Plane, b: &Plane, c: &Plane) -> Vec<f32> {
         let (width, height) = a.dimensions();
         let mut scores = vec![0.0; (width * height) as usize];
-        let mut window = TensorRow::new(width as usize);
+        let mut window = TensorRow::<i32>::new(width as usize);
         for y in 0..height {
             let row = (y * width) as usize..((y + 1) * width) as usize;
             window.xx.copy_from_slice(&a.as_raw()[row.clone()]);
@@ -904,7 +1002,7 @@ mod tests {
     fn raw_products_preserve_fractional_normalized_gradients_and_extremes() {
         let gx = [1i16, -31, 32, 4080, -4080];
         let gy = [-1i16, 1, 31, -4080, -4080];
-        let mut products = TensorRow::new(5);
+        let mut products = TensorRow::<i32>::new(5);
         gradient_products_row(&gx, &gy, &mut products);
         assert_eq!(products.xx, [1, 961, 1024, 16_646_400, 16_646_400]);
         assert_eq!(products.yy, [1, 1, 961, 16_646_400, 16_646_400]);
@@ -915,7 +1013,7 @@ mod tests {
     fn row_pipeline_matches_full_plane_box_sums_for_small_and_odd_sizes() {
         // One set of row buffers across sizes also checks that resizing them
         // between calls leaves no stale values behind.
-        let mut rows = TensorRows::default();
+        let mut rows = TensorRows::<i32>::default();
         for width in 1..8 {
             for height in 1..8 {
                 let gradient = |seed: u32| {
@@ -1126,7 +1224,7 @@ mod tests {
             height: 7,
             ..Default::default()
         };
-        let mut planes = Planes::default();
+        let mut planes = Planes::<i32>::default();
         planes.reserve(&capacity);
         let buffer = planes.candidates.as_ptr();
         let scores = vec![1.0; 9 * 7];

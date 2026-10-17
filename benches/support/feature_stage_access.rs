@@ -16,7 +16,7 @@ pub fn tensor_scores(
     gy: &image::ImageBuffer<image::Luma<i16>, Vec<i16>>,
 ) -> ScorePlane {
     let mut scores = vec![0.0; gx.as_raw().len()];
-    let mut rows = TensorRows::default();
+    let mut rows = TensorRows::<i32>::default();
     min_eigenvalue_scores(gx.as_raw(), gy.as_raw(), gx.width() as usize, &mut rows, &mut scores);
     scores
 }
