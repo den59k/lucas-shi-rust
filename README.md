@@ -37,7 +37,8 @@ let next: GrayImage = open("examples/input2.png").unwrap().into_luma8();
 let prev_pyr = build_pyramid(&prev, 4);
 let next_pyr = build_pyramid(&next, 4);
 
-let mut corners = good_features_to_track(&prev, 0.1, 5);
+// Keep corners scoring at least 1% of the strongest one, at least 5px apart.
+let mut corners = good_features_to_track(&prev, 0.01, 5);
 corners.truncate(100);
 let points: Vec<(f32, f32)> = corners.iter().map(|&(x, y, _)| (x as f32, y as f32)).collect();
 
