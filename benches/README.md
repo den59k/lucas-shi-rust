@@ -66,9 +66,11 @@ and devices can have different performance.
 
 ## Stage costs and explicit selection
 
-`cargo +stable bench --locked --bench feature_stages` measures gradients,
-products, tensor filtering, scores, NMS, quality filtering, sorting, spacing,
-and the whole plain detector separately. `-- --test --noplot` runs assertions
+`cargo +stable bench --locked --bench feature_stages` measures gradients, the
+fused row-by-row tensor and score pass (`tensor_scores`), NMS, quality filtering,
+sorting, spacing, and the whole plain detector separately. `floored_nms_quality`
+is the production selection path: it derives the quality floor, runs floored
+NMS and applies the quality filter. `-- --test --noplot` runs assertions
 and candidate counts without statistical timing. The harness includes the real
 private detector functions inside the benchmark binary; the library API and
 implementation are unchanged. Its reconstructed output must equal the public
@@ -119,3 +121,8 @@ Criterion 0.8.2, 30 samples, 0.3 s warm-up, 1 s target measurement and 10,000
 bootstrap resamples. JSON results retain means and 95% confidence intervals,
 counts, source/binary hashes and environment information. All dependency builds
 are offline, so dependencies and the WASI target must already be installed.
+
+Since products, window sums and scores were fused into one row-by-row pass and
+NMS takes a score plane, the access wrapper no longer maps onto revisions before
+that change, so this script cannot build them. Compare such revisions with the
+whole-call `features` benchmark as described above.

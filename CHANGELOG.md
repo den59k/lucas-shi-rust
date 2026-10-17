@@ -17,7 +17,22 @@
   raw products and 3x3 sums exactly in i32, then normalize the eigenvalue once by
   `32^2 * sample_count`, including image boundaries.
 - Preserve small eigenvalues of nearly rank-one tensors using an exact i64
-  determinant and `lambda_min = determinant / lambda_max` in f64.
+  determinant and `lambda_min = determinant / lambda_max`.
+
+### Performance
+
+- Compute gradient products, 3x3 window sums and scores in one row-by-row pass
+  with a three-row ring buffer instead of three full tensor planes. Both box-sum
+  passes now stream along rows instead of walking columns.
+- Compute scores in f32 after the exact i64 determinant; the formula has no
+  remaining cancellation. Scores differ from the f64 computation by at most about
+  2 ulp (relative 2.3e-7), so nearly equal scores can swap order before spacing.
+- Run non-maximum suppression on a score plane with a separable 3x3 maximum and
+  collect only positive maxima. When the global maximum lies inside the image it
+  is the strongest local maximum, so the relative quality threshold is applied
+  while collecting. Selected points are unchanged.
+- Whole-call detection on the benchmark inputs is about 3-6x faster natively
+  (aarch64) and 2-6x faster under WASI.
 
 ### Security
 
@@ -40,6 +55,6 @@
 Public API signatures and LK tracking are unchanged. Detected positions and
 scores can change as a consequence of these corrections; existing detection
 thresholds may need retuning. The score normalization is preserved, but eliminating
-integer truncation changes responses and selected points again. The three tensor
-planes now occupy 4 rather than 2 bytes per pixel per plane. The allocation-free
-detector and f32 image paths are separate work.
+integer truncation changes responses and selected points again. Detection keeps
+one f32 score plane and a few i32/f32 row buffers instead of three tensor planes.
+The allocation-free detector and f32 image paths are separate work.
