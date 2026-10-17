@@ -1,12 +1,16 @@
-use image::{GrayImage, ImageBuffer, Luma};
+use image::GrayImage;
 use std::cmp::Ordering;
 
 use crate::utils::{
     box_filter_3x3::{sum_row_3, sum_rows_3},
-    fast_gradients::compute_gradients,
+    fast_gradients::compute_gradients_into,
 };
 
 /// Finds good features points using the Shi-Tomasi algorithm
+///
+/// This is a convenience wrapper that allocates a fresh [`DetectorContext`];
+/// per-frame callers should keep one context and call
+/// [`DetectorContext::detect`] instead.
 ///
 /// # Arguments
 /// * `image` - Target image (grayscale)
@@ -26,10 +30,9 @@ pub fn good_features_to_track(
     quality_level: f32,
     min_distance: u32,
 ) -> Vec<(u32, u32, f32)> {
-    let features = detect_candidates(image, quality_level);
-
-    // Filter by distance
-    filter_by_distance(&features, min_distance, image.width(), image.height())
+    let mut ctx = DetectorContext::new();
+    ctx.detect(image, quality_level, min_distance);
+    std::mem::take(&mut ctx.results)
 }
 
 /// Finds good feature points with uniform frame coverage by detecting per grid
@@ -41,6 +44,10 @@ pub fn good_features_to_track(
 /// `existing_points`. Cells whose budget is already met by `existing_points` are
 /// skipped, so this can be called every few frames to top up lost tracks
 /// without clustering new detections on top of surviving ones.
+///
+/// This is a convenience wrapper that allocates a fresh [`DetectorContext`];
+/// per-frame callers should keep one context and call
+/// [`DetectorContext::detect_grid`] instead.
 ///
 /// # Arguments
 /// * `image` - Target image (grayscale)
@@ -55,6 +62,7 @@ pub fn good_features_to_track(
 /// # Returns
 /// Newly detected corners as `(x, y, min_eigenvalue)`, sorted by descending
 /// quality. `existing_points` are never included in the output.
+#[allow(clippy::too_many_arguments)]
 pub fn good_features_to_track_grid(
     image: &GrayImage,
     grid_cols: u32,
@@ -64,106 +72,276 @@ pub fn good_features_to_track_grid(
     min_distance: u32,
     existing_points: &[(f32, f32)],
 ) -> Vec<(u32, u32, f32)> {
-    assert!(grid_cols > 0 && grid_rows > 0, "grid must be non-empty");
-
-    if max_per_cell == 0 {
-        return Vec::new();
-    }
-    let candidates = detect_candidates(image, quality_level);
-    if candidates.is_empty() {
-        return candidates;
-    }
-    let (width, height) = image.dimensions();
-
-    // Detection cell of a point, clamped to the grid.
-    let cell_of = |x: f32, y: f32| -> usize {
-        let col = ((x / width as f32) * grid_cols as f32) as u32;
-        let row = ((y / height as f32) * grid_rows as f32) as u32;
-        let col = col.min(grid_cols - 1);
-        let row = row.min(grid_rows - 1);
-        (row * grid_cols + col) as usize
-    };
-
-    // Per-cell occupancy (existing + accepted) against the feature budget.
-    let mut cell_count = vec![0u32; (grid_cols * grid_rows) as usize];
-    // Spatial hash for min_distance, independent of the detection grid.
-    let mut occupancy = OccupancyGrid::new(width, height, min_distance);
-
-    for &(ex, ey) in existing_points {
-        cell_count[cell_of(ex, ey)] += 1;
-        occupancy.insert(ex, ey);
-    }
-
-    let min_distance = min_distance as f32;
-    let mut result = Vec::new();
-
-    for &(x, y, q) in &candidates {
-        let (xf, yf) = (x as f32, y as f32);
-        let cell = cell_of(xf, yf);
-
-        if cell_count[cell] >= max_per_cell {
-            continue;
-        }
-        if occupancy.has_neighbor_within(xf, yf, min_distance) {
-            continue;
-        }
-
-        occupancy.insert(xf, yf);
-        cell_count[cell] += 1;
-        result.push((x, y, q));
-    }
-
-    result
+    let mut ctx = DetectorContext::new();
+    ctx.detect_grid(
+        image,
+        grid_cols,
+        grid_rows,
+        max_per_cell,
+        quality_level,
+        min_distance,
+        existing_points,
+    );
+    std::mem::take(&mut ctx.results)
 }
 
-/// Runs the Shi-Tomasi pipeline and returns candidate corners sorted by
-/// descending quality, before any spacing constraint is applied.
-fn detect_candidates(image: &GrayImage, quality_level: f32) -> Vec<(u32, u32, f32)> {
-    if image.width() < 3 || image.height() < 3 {
-        return Vec::new();
+/// Reusable owner of every buffer the Shi-Tomasi detector touches: gradient
+/// planes, structure-tensor row buffers, the score plane, the candidate list,
+/// the spacing grid and the result vector.
+///
+/// Keep one per detection thread and call [`detect`](Self::detect) or
+/// [`detect_grid`](Self::detect_grid) each time. After the first call with a
+/// given image size, further calls with the same image size, grid size and
+/// spacing perform **no heap allocation**. The free functions
+/// [`good_features_to_track`] and [`good_features_to_track_grid`] create a
+/// context per call.
+#[derive(Default)]
+pub struct DetectorContext {
+    planes: Planes,
+    results: Vec<(u32, u32, f32)>,
+    occupancy: OccupancyGrid,
+    cell_count: Vec<u32>,
+}
+
+impl DetectorContext {
+    /// Creates an empty context. Buffers grow to fit on the first detection
+    /// and are reused thereafter.
+    pub fn new() -> Self {
+        Self::default()
     }
-    // Compute gradients
-    let (gx, gy) = compute_gradients(image);
 
-    // Gradient products, 3x3 window sums and minimum eigenvalues, row by row
-    let scores = min_eigenvalue_scores(&gx, &gy);
-    let (width, height) = (image.width() as usize, image.height() as usize);
+    /// Detects corners as [`good_features_to_track`] does, returning them from
+    /// the context's own result buffer. The slice is valid until the next call.
+    pub fn detect(
+        &mut self,
+        image: &GrayImage,
+        quality_level: f32,
+        min_distance: u32,
+    ) -> &[(u32, u32, f32)] {
+        self.detect_candidates(image, quality_level);
+        let (width, height) = image.dimensions();
+        enforce_spacing(
+            &self.planes.candidates,
+            min_distance,
+            width,
+            height,
+            &mut self.occupancy,
+            &mut self.results,
+        );
+        &self.results
+    }
 
-    // Non-maximum suppression, skipping scores that cannot pass the quality filter
-    let floor = quality_floor(&scores, width, height, quality_level);
-    let mut features = local_maxima(&scores, width, height, floor);
+    /// Detects corners per grid cell as [`good_features_to_track_grid`] does,
+    /// returning them from the context's own result buffer. The slice is valid
+    /// until the next call.
+    #[allow(clippy::too_many_arguments)]
+    pub fn detect_grid(
+        &mut self,
+        image: &GrayImage,
+        grid_cols: u32,
+        grid_rows: u32,
+        max_per_cell: u32,
+        quality_level: f32,
+        min_distance: u32,
+        existing_points: &[(f32, f32)],
+    ) -> &[(u32, u32, f32)] {
+        assert!(grid_cols > 0 && grid_rows > 0, "grid must be non-empty");
 
-    // Filter by quality
-    filter_by_quality(&mut features, quality_level);
+        self.results.clear();
+        if max_per_cell == 0 {
+            return &self.results;
+        }
+        self.detect_candidates(image, quality_level);
+        if self.planes.candidates.is_empty() {
+            return &self.results;
+        }
+        let (width, height) = image.dimensions();
 
-    // Sort by descending quality
-    features.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal));
+        // Detection cell of a point, clamped to the grid.
+        let cell_of = |x: f32, y: f32| -> usize {
+            let col = ((x / width as f32) * grid_cols as f32) as u32;
+            let row = ((y / height as f32) * grid_rows as f32) as u32;
+            let col = col.min(grid_cols - 1);
+            let row = row.min(grid_rows - 1);
+            (row * grid_cols + col) as usize
+        };
 
-    features
+        // Per-cell occupancy (existing + accepted) against the feature budget.
+        self.cell_count.clear();
+        self.cell_count.resize((grid_cols * grid_rows) as usize, 0);
+        // Spatial hash for min_distance, independent of the detection grid.
+        self.occupancy.reset(width, height, min_distance);
+
+        for &(ex, ey) in existing_points {
+            self.cell_count[cell_of(ex, ey)] += 1;
+            self.occupancy.insert(ex, ey);
+        }
+
+        let min_distance = min_distance as f32;
+        for &(x, y, q) in &self.planes.candidates {
+            let (xf, yf) = (x as f32, y as f32);
+            let cell = cell_of(xf, yf);
+
+            if self.cell_count[cell] >= max_per_cell {
+                continue;
+            }
+            if self.occupancy.has_neighbor_within(xf, yf, min_distance) {
+                continue;
+            }
+
+            self.occupancy.insert(xf, yf);
+            self.cell_count[cell] += 1;
+            self.results.push((x, y, q));
+        }
+
+        &self.results
+    }
+
+    /// Runs the Shi-Tomasi pipeline, leaving candidate corners sorted by
+    /// descending quality in `self.planes.candidates`, before any spacing
+    /// constraint.
+    fn detect_candidates(&mut self, image: &GrayImage, quality_level: f32) {
+        self.planes.candidates.clear();
+        if image.width() < 3 || image.height() < 3 {
+            return;
+        }
+
+        self.planes.run(image, quality_level);
+        let candidates = &mut self.planes.candidates;
+        filter_by_quality(candidates, quality_level);
+
+        // Descending quality; ties keep row-major order, which is the order the
+        // candidates were collected in. The unstable sort does not allocate.
+        candidates.sort_unstable_by(|a, b| {
+            b.2.partial_cmp(&a.2)
+                .unwrap_or(Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+                .then(a.0.cmp(&b.0))
+        });
+    }
+}
+
+/// The per-pixel stages of the detector and their buffers.
+#[derive(Default)]
+struct Planes {
+    grad_x: Vec<i16>,
+    grad_y: Vec<i16>,
+    tensor: TensorRows,
+    scores: Vec<f32>,
+    /// Horizontal 3-pixel score maxima of rows y - 1, y and y + 1 for NMS.
+    maxima_rows: [Vec<f32>; 3],
+    candidates: Vec<(u32, u32, f32)>,
+}
+
+impl Planes {
+    /// Gradients, structure tensor, scores and non-maximum suppression. Leaves
+    /// the local maxima that can pass `quality_level` in `candidates`, in
+    /// row-major order. The image must be at least 3x3.
+    ///
+    /// The stages are plain loops compiled for the target's baseline (SSE2,
+    /// NEON, `simd128`); on x86 an AVX2 copy is selected at runtime.
+    fn run(&mut self, image: &GrayImage, quality_level: f32) {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: guarded by the runtime feature check.
+            return unsafe { run_avx2(self, image, quality_level) };
+        }
+        run_impl(self, image, quality_level)
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+unsafe fn run_avx2(planes: &mut Planes, image: &GrayImage, quality_level: f32) {
+    run_impl(planes, image, quality_level)
+}
+
+#[inline(always)]
+fn run_impl(p: &mut Planes, image: &GrayImage, quality_level: f32) {
+    let (w, h) = (image.width() as usize, image.height() as usize);
+    let n = w * h;
+    p.grad_x.resize(n, 0);
+    p.grad_y.resize(n, 0);
+    p.scores.resize(n, 0.0);
+
+    compute_gradients_into(image, &mut p.grad_x, &mut p.grad_y);
+    min_eigenvalue_scores(&p.grad_x, &p.grad_y, w, &mut p.tensor, &mut p.scores);
+    let floor = quality_floor(&p.scores, w, h, quality_level);
+    local_maxima(
+        &p.scores,
+        w,
+        h,
+        floor,
+        &mut p.maxima_rows,
+        &mut p.candidates,
+    );
+}
+
+/// Keeps candidates at or above `quality_level` times the strongest one.
+fn filter_by_quality(candidates: &mut Vec<(u32, u32, f32)>, quality_level: f32) {
+    let max_quality = candidates.iter().fold(0.0f32, |max, p| max.max(p.2));
+    let threshold = quality_level * max_quality;
+    candidates.retain(|&(_, _, q)| q >= threshold);
+}
+
+/// Greedy minimum-distance filter over quality-sorted candidates, writing the
+/// kept points into `out`.
+fn enforce_spacing(
+    candidates: &[(u32, u32, f32)],
+    min_distance: u32,
+    width: u32,
+    height: u32,
+    occupancy: &mut OccupancyGrid,
+    out: &mut Vec<(u32, u32, f32)>,
+) {
+    out.clear();
+    if candidates.is_empty() {
+        return;
+    }
+    if min_distance == 0 {
+        out.extend_from_slice(candidates);
+        return;
+    }
+    occupancy.reset(width, height, min_distance);
+    for &(x, y, q) in candidates {
+        let (xf, yf) = (x as f32, y as f32);
+        if !occupancy.has_neighbor_within(xf, yf, min_distance as f32) {
+            // Multiple accepted points can occupy one cell (diagonally). Keep
+            // every one so later candidates cannot hide an earlier neighbor.
+            occupancy.insert(xf, yf);
+            out.push((x, y, q));
+        }
+    }
 }
 
 /// Uniform spatial hash used to enforce `min_distance` between kept points.
 ///
 /// Cells are `min_distance` wide, so any point closer than `min_distance` to a
 /// query is guaranteed to live in the query's cell or one of its 8 neighbors.
+/// Points in a cell form an intrusive linked list (`heads` / `next`), so the
+/// grid reuses three flat vectors and never allocates once warm.
+#[derive(Default)]
 struct OccupancyGrid {
     cell_size: u32,
     cols: u32,
     rows: u32,
-    cells: Vec<Vec<(f32, f32)>>,
+    heads: Vec<u32>,
+    next: Vec<u32>,
+    points: Vec<(f32, f32)>,
 }
 
+const NO_POINT: u32 = u32::MAX;
+
 impl OccupancyGrid {
-    fn new(width: u32, height: u32, min_distance: u32) -> Self {
-        let cell_size = min_distance.max(1);
-        let cols = width.div_ceil(cell_size).max(1);
-        let rows = height.div_ceil(cell_size).max(1);
-        OccupancyGrid {
-            cell_size,
-            cols,
-            rows,
-            cells: vec![Vec::new(); (cols * rows) as usize],
-        }
+    fn reset(&mut self, width: u32, height: u32, min_distance: u32) {
+        self.cell_size = min_distance.max(1);
+        self.cols = width.div_ceil(self.cell_size).max(1);
+        self.rows = height.div_ceil(self.cell_size).max(1);
+        self.heads.clear();
+        self.heads
+            .resize((self.cols * self.rows) as usize, NO_POINT);
+        self.next.clear();
+        self.points.clear();
     }
 
     fn cell(&self, x: f32, y: f32) -> (u32, u32) {
@@ -174,7 +352,11 @@ impl OccupancyGrid {
 
     fn insert(&mut self, x: f32, y: f32) {
         let (col, row) = self.cell(x, y);
-        self.cells[(row * self.cols + col) as usize].push((x, y));
+        let cell = (row * self.cols + col) as usize;
+        let index = self.points.len() as u32;
+        self.points.push((x, y));
+        self.next.push(self.heads[cell]);
+        self.heads[cell] = index;
     }
 
     fn has_neighbor_within(&self, x: f32, y: f32, min_distance: f32) -> bool {
@@ -193,11 +375,14 @@ impl OccupancyGrid {
                     continue;
                 }
 
-                for &(px, py) in &self.cells[(cy as u32 * self.cols + cx as u32) as usize] {
+                let mut index = self.heads[(cy as u32 * self.cols + cx as u32) as usize];
+                while index != NO_POINT {
+                    let (px, py) = self.points[index as usize];
                     let dist_sq = (x - px).powi(2) + (y - py).powi(2);
                     if dist_sq < min_dist_sq {
                         return true;
                     }
+                    index = self.next[index as usize];
                 }
             }
         }
@@ -208,6 +393,7 @@ impl OccupancyGrid {
 
 /// One image row of the structure tensor components `[[xx, xy], [xy, yy]]`:
 /// raw gradient products, or their horizontal or full 3x3 window sums.
+#[derive(Default)]
 struct TensorRow {
     xx: Vec<i32>,
     yy: Vec<i32>,
@@ -215,11 +401,16 @@ struct TensorRow {
 }
 
 impl TensorRow {
+    #[cfg(test)]
     fn new(width: usize) -> Self {
-        TensorRow {
-            xx: vec![0; width],
-            yy: vec![0; width],
-            xy: vec![0; width],
+        let mut row = Self::default();
+        row.resize(width);
+        row
+    }
+
+    fn resize(&mut self, width: usize) {
+        for plane in [&mut self.xx, &mut self.yy, &mut self.xy] {
+            plane.resize(width, 0);
         }
     }
 
@@ -232,6 +423,7 @@ impl TensorRow {
     }
 
     /// Vertical 3-row sum of horizontally summed rows; `None` is outside the image.
+    #[inline(always)]
     fn sum_rows(&mut self, above: Option<&Self>, center: &Self, below: Option<&Self>) {
         let (above, below) = (above.map(Self::planes), below.map(Self::planes));
         for (k, dst) in self.planes_mut().into_iter().enumerate() {
@@ -241,9 +433,20 @@ impl TensorRow {
     }
 }
 
+/// Row buffers of the fused tensor pass: raw products of one row, horizontal
+/// sums of rows y - 1, y and y + 1 (stored at row % 3), and the 3x3 window
+/// sums of row y.
+#[derive(Default)]
+struct TensorRows {
+    products: TensorRow,
+    ring: [TensorRow; 3],
+    window: TensorRow,
+}
+
 /// Raw Scharr products of one row. For u8 images, |Scharr| <= 4080: products
 /// <= 16_646_400 and 3x3 sums <= 149_817_600 fit in i32. Deferring the /32
 /// normalization avoids discarding sub-grey-level gradients before squaring.
+#[inline(always)]
 fn gradient_products_row(gx: &[i16], gy: &[i16], products: &mut TensorRow) {
     let rows = products
         .xx
@@ -260,6 +463,7 @@ fn gradient_products_row(gx: &[i16], gy: &[i16], products: &mut TensorRow) {
 }
 
 /// Products of one gradient row, summed horizontally over three pixels.
+#[inline(always)]
 fn horizontal_tensor_row(gx: &[i16], gy: &[i16], products: &mut TensorRow, sums: &mut TensorRow) {
     gradient_products_row(gx, gy, products);
     sum_row_3(&products.xx, &mut sums.xx);
@@ -267,43 +471,50 @@ fn horizontal_tensor_row(gx: &[i16], gy: &[i16], products: &mut TensorRow, sums:
     sum_row_3(&products.xy, &mut sums.xy);
 }
 
-/// Minimum eigenvalue of the mean 3x3 structure tensor at every pixel, as a
-/// row-major score plane. Products and window sums are computed one row at a
-/// time, keeping only three horizontally summed rows instead of tensor planes.
+/// Minimum eigenvalue of the mean 3x3 structure tensor at every pixel of a
+/// row-major `width`-wide plane. Products and window sums are computed one row
+/// at a time, keeping only three horizontally summed rows instead of tensor
+/// planes.
+#[inline(always)]
 fn min_eigenvalue_scores(
-    gx: &ImageBuffer<Luma<i16>, Vec<i16>>,
-    gy: &ImageBuffer<Luma<i16>, Vec<i16>>,
-) -> Vec<f32> {
-    let (width, height) = gx.dimensions();
-    let (w, h) = (width as usize, height as usize);
-    let mut scores = vec![0.0f32; w * h];
-    if w == 0 || h == 0 {
-        return scores;
+    gx: &[i16],
+    gy: &[i16],
+    width: usize,
+    rows: &mut TensorRows,
+    scores: &mut [f32],
+) {
+    if width == 0 || scores.is_empty() {
+        return;
+    }
+    let height = scores.len() / width;
+    let TensorRows {
+        products,
+        ring,
+        window,
+    } = rows;
+    for row in [&mut *products, &mut *window]
+        .into_iter()
+        .chain(ring.iter_mut())
+    {
+        row.resize(width);
     }
 
-    let (gx, gy) = (gx.as_raw(), gy.as_raw());
-    let row = |y: usize| y * w..(y + 1) * w;
-    let mut products = TensorRow::new(w);
-    // Horizontal sums of the rows above, at and below y, stored at row % 3.
-    let mut ring = [TensorRow::new(w), TensorRow::new(w), TensorRow::new(w)];
-    let mut window = TensorRow::new(w);
-
-    horizontal_tensor_row(&gx[row(0)], &gy[row(0)], &mut products, &mut ring[0]);
-    for y in 0..h {
-        if y + 1 < h {
+    let row = |y: usize| y * width..(y + 1) * width;
+    horizontal_tensor_row(&gx[row(0)], &gy[row(0)], products, &mut ring[0]);
+    for y in 0..height {
+        if y + 1 < height {
             let next = &mut ring[(y + 1) % 3];
-            horizontal_tensor_row(&gx[row(y + 1)], &gy[row(y + 1)], &mut products, next);
+            horizontal_tensor_row(&gx[row(y + 1)], &gy[row(y + 1)], products, next);
         }
         let above = (y > 0).then(|| &ring[(y + 2) % 3]);
-        let below = (y + 1 < h).then(|| &ring[(y + 1) % 3]);
+        let below = (y + 1 < height).then(|| &ring[(y + 1) % 3]);
         window.sum_rows(above, &ring[y % 3], below);
-        score_row(&window, y as u32, height, &mut scores[row(y)]);
+        score_row(window, y as u32, height as u32, &mut scores[row(y)]);
     }
-
-    scores
 }
 
 /// Normalized minimum eigenvalues of one row of 3x3 window sums.
+#[inline(always)]
 fn score_row(window: &TensorRow, y: u32, height: u32, scores: &mut [f32]) {
     let width = scores.len();
     let rows = 1 + u32::from(y > 0) + u32::from(y + 1 < height);
@@ -324,6 +535,7 @@ fn score_row(window: &TensorRow, y: u32, height: u32, scores: &mut [f32]) {
 
 /// Small eigenvalue of [[a, c], [c, b]] for summed gradient products, divided
 /// by `normalization`.
+#[inline(always)]
 fn scaled_min_eigenvalue(a: i32, b: i32, c: i32, normalization: f32) -> f32 {
     // Compute the determinant exactly in i64: i32 tensor sums can have a
     // discriminant larger than i32, and ab - c^2 cancels for nearly rank-one
@@ -345,6 +557,7 @@ fn scaled_min_eigenvalue(a: i32, b: i32, c: i32, normalization: f32) -> f32 {
 /// maximum inside the image is one, which fixes the threshold before NMS. NMS
 /// never selects border pixels, so a maximum found only on the border does not;
 /// nothing beyond non-positive scores is skipped then.
+#[inline(always)]
 fn quality_floor(scores: &[f32], width: usize, height: usize, quality_level: f32) -> f32 {
     let (mut interior, mut border) = (0.0f32, 0.0f32);
     for (y, row) in scores.chunks_exact(width).enumerate() {
@@ -362,23 +575,33 @@ fn quality_floor(scores: &[f32], width: usize, height: usize, quality_level: f32
     }
 }
 
-/// Positive interior local maxima at or above `floor`, in row-major order. A
-/// pixel is kept when no 8-neighbor has a greater score, so plateaus survive;
-/// it equals the maximum of its 3x3 neighborhood, computed separably.
-fn local_maxima(scores: &[f32], width: usize, height: usize, floor: f32) -> Vec<(u32, u32, f32)> {
-    let mut maxima = Vec::new();
+/// Appends the positive interior local maxima at or above `floor` to `maxima`,
+/// in row-major order. A pixel is kept when no 8-neighbor has a greater score,
+/// so plateaus survive; it equals the maximum of its 3x3 neighborhood, which is
+/// computed separably in `rows`.
+#[inline(always)]
+fn local_maxima(
+    scores: &[f32],
+    width: usize,
+    height: usize,
+    floor: f32,
+    rows: &mut [Vec<f32>; 3],
+    maxima: &mut Vec<(u32, u32, f32)>,
+) {
     if width < 3 || height < 3 {
-        return maxima;
+        return;
+    }
+    for row in rows.iter_mut() {
+        row.resize(width - 2, 0.0);
     }
     let row = |y: usize| &scores[y * width..(y + 1) * width];
     // Horizontal 3-pixel maxima for the interior columns of rows y - 1, y and
     // y + 1, stored at row % 3.
-    let mut ring: [Vec<f32>; 3] = std::array::from_fn(|_| vec![0.0; width - 2]);
-    max_row_3(row(0), &mut ring[0]);
-    max_row_3(row(1), &mut ring[1]);
+    max_row_3(row(0), &mut rows[0]);
+    max_row_3(row(1), &mut rows[1]);
     for y in 1..height - 1 {
-        max_row_3(row(y + 1), &mut ring[(y + 1) % 3]);
-        let (above, center, below) = (&ring[(y + 2) % 3], &ring[y % 3], &ring[(y + 1) % 3]);
+        max_row_3(row(y + 1), &mut rows[(y + 1) % 3]);
+        let (above, center, below) = (&rows[(y + 2) % 3], &rows[y % 3], &rows[(y + 1) % 3]);
         for (i, &score) in row(y)[1..width - 1].iter().enumerate() {
             let neighborhood = max_score(max_score(above[i], center[i]), below[i]);
             if score > 0.0 && score >= floor && score == neighborhood {
@@ -386,10 +609,10 @@ fn local_maxima(scores: &[f32], width: usize, height: usize, floor: f32) -> Vec<
             }
         }
     }
-    maxima
 }
 
 /// `dst[i] = max(src[i], src[i + 1], src[i + 2])`, one value per interior column.
+#[inline(always)]
 fn max_row_3(src: &[f32], dst: &mut [f32]) {
     let windows = src.iter().zip(&src[1..]).zip(&src[2..]);
     for (value, ((&left, &center), &right)) in dst.iter_mut().zip(windows) {
@@ -400,6 +623,7 @@ fn max_row_3(src: &[f32], dst: &mut [f32]) {
 /// Maximum of two scores. Scores are never NaN, so both forms below are exact.
 /// `f32::max` is one instruction on aarch64 (`fmaxnm`); elsewhere, such as on
 /// WASM, its NaN handling costs extra instructions, so compare instead.
+#[inline(always)]
 fn max_score(a: f32, b: f32) -> f32 {
     if cfg!(target_arch = "aarch64") {
         a.max(b)
@@ -412,6 +636,7 @@ fn max_score(a: f32, b: f32) -> f32 {
 
 /// Maximum of `init` and all `scores`. The maximum is exact in any order, so
 /// independent lanes may reduce in parallel, which lets the loop vectorize.
+#[inline(always)]
 fn max_of(scores: &[f32], init: f32) -> f32 {
     let mut lanes = [init; 8];
     let chunks = scores.chunks_exact(lanes.len());
@@ -425,44 +650,25 @@ fn max_of(scores: &[f32], init: f32) -> f32 {
     rest.iter().chain(&lanes).fold(init, max)
 }
 
-fn filter_by_quality(features: &mut Vec<(u32, u32, f32)>, quality_level: f32) {
-    let max_quality = features
-        .iter()
-        .map(|&(_, _, q)| q)
-        .fold(0.0f32, |a, b| a.max(b));
-    let threshold = quality_level * max_quality;
-    // A zero response is not a corner, including when the entire image is flat.
-    features.retain(|&(_, _, q)| q > 0.0 && q >= threshold);
-}
-
-fn filter_by_distance(
-    features: &[(u32, u32, f32)],
-    min_distance: u32,
-    width: u32,
-    height: u32,
-) -> Vec<(u32, u32, f32)> {
-    if features.is_empty() || min_distance == 0 {
-        return features.to_vec();
-    }
-    let mut occupancy = OccupancyGrid::new(width, height, min_distance);
-    let mut result = Vec::new();
-    for &(x, y, q) in features {
-        let (xf, yf) = (x as f32, y as f32);
-        if !occupancy.has_neighbor_within(xf, yf, min_distance as f32) {
-            // Multiple accepted points can occupy one cell (diagonally). Keep
-            // every one so later candidates cannot hide an earlier neighbor.
-            occupancy.insert(xf, yf);
-            result.push((x, y, q));
-        }
-    }
-
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::utils::box_filter_3x3::box_sum_3x3_in_place;
+    use image::{ImageBuffer, Luma};
+
+    fn spaced(candidates: &[(u32, u32, f32)], min_distance: u32) -> Vec<(u32, u32, f32)> {
+        let mut occupancy = OccupancyGrid::default();
+        let mut out = Vec::new();
+        enforce_spacing(candidates, min_distance, 30, 30, &mut occupancy, &mut out);
+        out
+    }
+
+    fn maxima(scores: &[f32], width: usize, height: usize, floor: f32) -> Vec<(u32, u32, f32)> {
+        let mut rows = Default::default();
+        let mut out = Vec::new();
+        local_maxima(scores, width, height, floor, &mut rows, &mut out);
+        out
+    }
 
     #[test]
     fn minimum_eigenvalues_match_analytic_tensors() {
@@ -517,6 +723,9 @@ mod tests {
 
     #[test]
     fn row_pipeline_matches_full_plane_box_sums_for_small_and_odd_sizes() {
+        // One set of row buffers across sizes also checks that resizing them
+        // between calls leaves no stale values behind.
+        let mut rows = TensorRows::default();
         for width in 1..8 {
             for height in 1..8 {
                 let gradient = |seed: u32| {
@@ -539,11 +748,15 @@ mod tests {
                     &plane(|_, iy| iy * iy),
                     &plane(|ix, iy| ix * iy),
                 );
-                assert_eq!(
-                    min_eigenvalue_scores(&gx, &gy),
-                    expected,
-                    "{width}x{height}"
+                let mut scores = vec![0.0; (width * height) as usize];
+                min_eigenvalue_scores(
+                    gx.as_raw(),
+                    gy.as_raw(),
+                    width as usize,
+                    &mut rows,
+                    &mut scores,
                 );
+                assert_eq!(scores, expected, "{width}x{height}");
             }
         }
     }
@@ -604,25 +817,31 @@ mod tests {
                     })
                     .collect();
                 let expected = brute_force_maxima(&scores, width, height);
-                assert_eq!(local_maxima(&scores, width, height, 0.0), expected);
+                assert_eq!(maxima(&scores, width, height, 0.0), expected);
                 for floor in [0.5, 1.0, 3.0, 999.0] {
                     let mut above = expected.clone();
                     above.retain(|p| p.2 >= floor);
-                    assert_eq!(local_maxima(&scores, width, height, floor), above);
+                    assert_eq!(maxima(&scores, width, height, floor), above);
                 }
             }
         }
     }
 
     #[test]
-    fn plateau_pixels_are_all_kept() {
-        #[rustfmt::skip]
-        let scores = [
-            0.0, 0.0, 0.0, 0.0,
-            0.0, 2.0, 2.0, 0.0,
-            0.0, 0.0, 0.0, 0.0,
-        ];
-        assert_eq!(local_maxima(&scores, 4, 3, 0.0), [(1, 1, 2.0), (2, 1, 2.0)]);
+    fn local_maxima_exclude_borders_zeros_and_dominated_pixels() {
+        // 6x5 plane. Two equal adjacent scores are both kept; a pixel next to a
+        // strictly higher one is suppressed; border pixels are never candidates.
+        let width = 6;
+        let mut scores = vec![0f32; width * 5];
+        scores[width + 1] = 5.0;
+        scores[width + 2] = 5.0;
+        scores[3 * width + 4] = 7.0;
+        scores[3 * width + 3] = 6.0; // neighbour of the 7, suppressed
+        scores[4 * width] = 100.0; // border, never a candidate
+        assert_eq!(
+            maxima(&scores, width, 5, 0.0),
+            vec![(1, 1, 5.0), (2, 1, 5.0), (4, 3, 7.0)]
+        );
     }
 
     #[test]
@@ -637,12 +856,12 @@ mod tests {
             0.0, 0.0, 0.0, 0.0, 0.0,
         ];
         assert_eq!(quality_floor(&scores, 5, 4, 0.5), 0.0);
-        assert_eq!(local_maxima(&scores, 5, 4, 0.0), [(3, 2, 2.0)]);
+        assert_eq!(maxima(&scores, 5, 4, 0.0), [(3, 2, 2.0)]);
 
         let mut interior = scores;
         interior[0] = 1.0;
         assert_eq!(quality_floor(&interior, 5, 4, 0.5), 2.5);
-        assert_eq!(local_maxima(&interior, 5, 4, 2.5), [(1, 1, 5.0)]);
+        assert_eq!(maxima(&interior, 5, 4, 2.5), [(1, 1, 5.0)]);
     }
 
     #[test]
@@ -699,16 +918,32 @@ mod tests {
     #[test]
     fn spacing_keeps_all_accepted_points_in_each_cell() {
         let candidates = [(10, 10, 3.0), (19, 19, 2.0), (10, 11, 1.0)];
-        assert_eq!(filter_by_distance(&candidates, 10, 30, 30), candidates[..2]);
+        assert_eq!(spaced(&candidates, 10), candidates[..2]);
     }
 
     #[test]
     fn zero_spacing_keeps_all_candidates_and_large_spacing_does_not_overflow() {
         let candidates = [(1, 1, 3.0), (1, 2, 2.0), (20, 20, 1.0)];
-        assert_eq!(filter_by_distance(&candidates, 0, 30, 30), candidates);
-        assert_eq!(
-            filter_by_distance(&candidates, u32::MAX, 30, 30),
-            candidates[..1]
-        );
+        assert_eq!(spaced(&candidates, 0), candidates);
+        assert_eq!(spaced(&candidates, u32::MAX), candidates[..1]);
+    }
+
+    #[test]
+    fn context_reuse_gives_identical_results_to_free_functions() {
+        let image = GrayImage::from_fn(64, 48, |x, y| {
+            image::Luma([((x * 31 + y * 17 + (x ^ y) * 13) & 255) as u8])
+        });
+        let mut ctx = DetectorContext::new();
+        for _ in 0..2 {
+            assert_eq!(
+                ctx.detect(&image, 0.01, 5),
+                good_features_to_track(&image, 0.01, 5)
+            );
+            let existing = [(10.0, 10.0), (40.0, 30.0)];
+            assert_eq!(
+                ctx.detect_grid(&image, 4, 3, 3, 0.01, 6, &existing),
+                good_features_to_track_grid(&image, 4, 3, 3, 0.01, 6, &existing)
+            );
+        }
     }
 }

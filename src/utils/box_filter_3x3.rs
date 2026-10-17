@@ -8,6 +8,7 @@ const MAX_BOX_SUM_INPUT: i32 = i32::MAX / 9;
 /// `dst[x] = src[x - 1] + src[x] + src[x + 1]`. Boundaries include only the
 /// available samples; the caller normalizes by their count when needed. Inputs
 /// must have magnitude <= i32::MAX / 9 so both passes fit in i32.
+#[inline(always)]
 pub fn sum_row_3(src: &[i32], dst: &mut [i32]) {
     debug_assert_eq!(src.len(), dst.len());
     // Release builds would wrap silently on overflow; catch violations in debug.
@@ -42,6 +43,7 @@ pub fn sum_row_3(src: &[i32], dst: &mut [i32]) {
 /// Vertical pass of a centered 3x3 box sum: lane-wise sum of the horizontally
 /// summed rows above, at and below the output row. `None` marks a row outside
 /// the image, so boundaries again include only the available samples.
+#[inline(always)]
 pub fn sum_rows_3(above: Option<&[i32]>, center: &[i32], below: Option<&[i32]>, dst: &mut [i32]) {
     debug_assert_eq!(center.len(), dst.len());
     match (above, below) {

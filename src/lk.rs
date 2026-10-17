@@ -11,6 +11,16 @@ use crate::utils::fast_gradients::compute_gradients_into;
 /// [`TrackStatus::LowTexture`].
 pub const DEFAULT_MIN_EIGEN_THRESHOLD: f32 = 1e-3;
 
+/// Per-level convergence threshold, in pixels of the current pyramid level.
+///
+/// The iteration at a level stops once both components of the displacement
+/// update are below this value, or once two consecutive updates cancel each
+/// other (the estimate oscillates around the optimum, which is then taken as
+/// their midpoint). This matches the effective stopping precision of OpenCV's
+/// `calcOpticalFlowPyrLK`. A point that reaches `max_iterations` without
+/// meeting either condition is reported as [`TrackStatus::Diverged`].
+pub const CONVERGENCE_EPSILON: f32 = 0.01;
+
 /// Why a feature point ended up where it did after tracking.
 ///
 /// See [`TrackResult`] for the coordinate convention.
@@ -20,8 +30,10 @@ pub enum TrackStatus {
     Tracked,
     /// The search window left the image (in the previous or the next frame).
     OutOfBounds,
-    /// The iteration hit `max_iterations` without converging, or a step
-    /// exploded (non-finite or larger than the window).
+    /// The iteration hit `max_iterations` without converging (see
+    /// [`CONVERGENCE_EPSILON`]), or a step exploded (non-finite or larger than
+    /// the window). The reported position is the last estimate, not a lost
+    /// track: callers that prefer OpenCV's semantics may still use it.
     Diverged,
     /// The minimum eigenvalue of the spatial gradient matrix fell below the
     /// configured threshold, i.e. the window is too flat to track reliably.
@@ -151,7 +163,6 @@ pub fn calc_optical_flow_ex(
 /// steady-state hot path performs no heap allocation.
 #[derive(Default)]
 struct Scratch {
-    offsets: Vec<(f32, f32)>,
     prev_patch: Vec<f32>,
     ix_patch: Vec<f32>,
     iy_patch: Vec<f32>,
@@ -192,11 +203,8 @@ fn track_into(
     let n_levels = prev_pyramid.len();
     let radius = window_size / 2;
     let n_pixels = window_size * window_size;
-    let epsilon = 1e-3;
-    let det_epsilon = 1e-6;
 
     let Scratch {
-        offsets,
         prev_patch,
         ix_patch,
         iy_patch,
@@ -207,7 +215,6 @@ fn track_into(
 
     // Prepare reusable buffers. resize/clear+extend keep capacity, so none of
     // this allocates once the buffers are warm.
-    build_window_offsets_into(radius, offsets);
     prev_patch.resize(n_pixels, 0.0);
     ix_patch.resize(n_pixels, 0.0);
     iy_patch.resize(n_pixels, 0.0);
@@ -240,11 +247,10 @@ fn track_into(
         error: f32::INFINITY,
     }));
 
+    let kernel = Kernel::detect();
+
     // Process levels from top (coarse) to bottom (fine).
     for level in (0..n_levels).rev() {
-        let scale = 2f32.powi(level as i32);
-        let is_finest = level == 0;
-
         let prev_img = &prev_pyramid[level];
         let curr_img = &curr_pyramid[level];
         let (lw, lh) = prev_img.dimensions();
@@ -255,123 +261,31 @@ fn track_into(
             &mut grad_x_buf[..level_pixels],
             &mut grad_y_buf[..level_pixels],
         );
-        let grad_x = &grad_x_buf[..level_pixels];
-        let grad_y = &grad_y_buf[..level_pixels];
 
-        for (idx, (prev_x, prev_y)) in prev_points.iter().enumerate() {
-            // Scale the original point for the current level.
-            let x = *prev_x / scale;
-            let y = *prev_y / scale;
+        let level = Level {
+            prev: prev_img.as_raw(),
+            curr: curr_img.as_raw(),
+            grad_x: &grad_x_buf[..level_pixels],
+            grad_y: &grad_y_buf[..level_pixels],
+            width: lw as usize,
+            height: lh as usize,
+            scale: 2f32.powi(level as i32),
+            is_finest: level == 0,
+            window_size,
+            radius,
+            max_iterations,
+            min_eigen_threshold,
+        };
 
-            // Add the current displacement, scaled for this level.
-            let mut dx = displacements[idx].0 / scale;
-            let mut dy = displacements[idx].1 / scale;
-
-            // The window must stay inside the previous image to build the patch.
-            if !in_bounds(prev_img, x, y, radius) {
-                out[idx].status = TrackStatus::OutOfBounds;
-                continue;
-            }
-
-            // Spatial gradient matrix and cached previous/gradient patches.
-            let mut gxx = 0.0f32;
-            let mut gxy = 0.0f32;
-            let mut gyy = 0.0f32;
-
-            for (i, (ox, oy)) in offsets.iter().enumerate() {
-                let sample_x = x + ox;
-                let sample_y = y + oy;
-                let ix = interpolate_i16(grad_x, lw, lh, sample_x, sample_y) / 32.0;
-                let iy = interpolate_i16(grad_y, lw, lh, sample_x, sample_y) / 32.0;
-
-                prev_patch[i] = interpolate(prev_img, sample_x, sample_y);
-                ix_patch[i] = ix;
-                iy_patch[i] = iy;
-                gxx += ix * ix;
-                gxy += ix * iy;
-                gyy += iy * iy;
-            }
-
-            // Reject low-texture windows up front (normalized by window area so
-            // the threshold does not depend on `window_size`).
-            let min_eig = min_eigenvalue(gxx, gxy, gyy) / n_pixels as f32;
-            if min_eig < min_eigen_threshold {
-                out[idx].status = TrackStatus::LowTexture;
-                if is_finest {
-                    out[idx].error =
-                        window_error(curr_img, prev_patch, offsets, x + dx, y + dy, radius);
-                }
-                continue;
-            }
-
-            let Some((inv_h00, inv_h01, inv_h11)) = invert_2x2(gxx, gxy, gyy, det_epsilon) else {
-                out[idx].status = TrackStatus::LowTexture;
-                continue;
-            };
-
-            // Refine the displacement at the current level.
-            let mut converged = false;
-            let mut out_of_bounds = false;
-            let mut diverged = false;
-            for _ in 0..max_iterations {
-                let curr_x = x + dx;
-                let curr_y = y + dy;
-
-                if !in_bounds(curr_img, curr_x, curr_y, radius) {
-                    out_of_bounds = true;
-                    break;
-                }
-
-                let mut bx = 0.0f32;
-                let mut by = 0.0f32;
-
-                for (i, (ox, oy)) in offsets.iter().enumerate() {
-                    let curr = interpolate(curr_img, curr_x + ox, curr_y + oy);
-                    let error = prev_patch[i] - curr;
-                    bx += ix_patch[i] * error;
-                    by += iy_patch[i] * error;
-                }
-
-                let ddx = inv_h00 * bx + inv_h01 * by;
-                let ddy = inv_h01 * bx + inv_h11 * by;
-                dx += ddx;
-                dy += ddy;
-
-                // Guard against runaway steps.
-                if !dx.is_finite()
-                    || !dy.is_finite()
-                    || ddx.abs() > window_size as f32
-                    || ddy.abs() > window_size as f32
-                {
-                    diverged = true;
-                    break;
-                }
-
-                if ddx.abs() < epsilon && ddy.abs() < epsilon {
-                    converged = true;
-                    break;
-                }
-            }
-
-            out[idx].status = if out_of_bounds {
-                TrackStatus::OutOfBounds
-            } else if diverged || !converged {
-                TrackStatus::Diverged
-            } else {
-                TrackStatus::Tracked
-            };
-
-            // Update the total displacement with the current level scale.
-            displacements[idx] = (dx * scale, dy * scale);
-
-            if is_finest {
-                out[idx].error = if out_of_bounds {
-                    f32::INFINITY
-                } else {
-                    window_error(curr_img, prev_patch, offsets, x + dx, y + dy, radius)
-                };
-            }
-        }
+        kernel.track_level(
+            &level,
+            prev_points,
+            displacements,
+            prev_patch,
+            ix_patch,
+            iy_patch,
+            out,
+        );
     }
 
     // Fold accumulated displacements into the reported positions.
@@ -379,6 +293,541 @@ fn track_into(
         let (dx, dy) = displacements[idx];
         out[idx].pos = (x + dx, y + dy);
     }
+}
+
+/// Everything the per-level loop needs about one pyramid level.
+struct Level<'a> {
+    prev: &'a [u8],
+    curr: &'a [u8],
+    grad_x: &'a [i16],
+    grad_y: &'a [i16],
+    width: usize,
+    height: usize,
+    scale: f32,
+    is_finest: bool,
+    window_size: usize,
+    radius: usize,
+    max_iterations: usize,
+    min_eigen_threshold: f32,
+}
+
+/// Instruction set the per-level loop is compiled for. The portable body is
+/// written so the compiler can vectorize it for whatever the target enables
+/// (SSE2 baseline, NEON, `simd128`); on x86 an AVX2 copy is selected at runtime.
+#[derive(Clone, Copy)]
+enum Kernel {
+    Portable,
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    Avx2,
+}
+
+impl Kernel {
+    fn detect() -> Self {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if is_x86_feature_detected!("avx2") {
+            return Kernel::Avx2;
+        }
+        Kernel::Portable
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn track_level(
+        self,
+        level: &Level,
+        prev_points: &[(f32, f32)],
+        displacements: &mut [(f32, f32)],
+        prev_patch: &mut [f32],
+        ix_patch: &mut [f32],
+        iy_patch: &mut [f32],
+        out: &mut [TrackResult],
+    ) {
+        match self {
+            Kernel::Portable => track_level_impl(
+                level,
+                prev_points,
+                displacements,
+                prev_patch,
+                ix_patch,
+                iy_patch,
+                out,
+            ),
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            // SAFETY: `detect` only returns `Avx2` after a positive runtime check.
+            Kernel::Avx2 => unsafe {
+                track_level_avx2(
+                    level,
+                    prev_points,
+                    displacements,
+                    prev_patch,
+                    ix_patch,
+                    iy_patch,
+                    out,
+                )
+            },
+        }
+    }
+}
+
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn track_level_avx2(
+    level: &Level,
+    prev_points: &[(f32, f32)],
+    displacements: &mut [(f32, f32)],
+    prev_patch: &mut [f32],
+    ix_patch: &mut [f32],
+    iy_patch: &mut [f32],
+    out: &mut [TrackResult],
+) {
+    track_level_impl(
+        level,
+        prev_points,
+        displacements,
+        prev_patch,
+        ix_patch,
+        iy_patch,
+        out,
+    )
+}
+
+/// Refines every point's displacement at one pyramid level.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn track_level_impl(
+    lv: &Level,
+    prev_points: &[(f32, f32)],
+    displacements: &mut [(f32, f32)],
+    prev_patch: &mut [f32],
+    ix_patch: &mut [f32],
+    iy_patch: &mut [f32],
+    out: &mut [TrackResult],
+) {
+    let n_pixels = lv.window_size * lv.window_size;
+    let det_epsilon = 1e-6;
+    let window_limit = lv.window_size as f32;
+
+    for (idx, &(prev_x, prev_y)) in prev_points.iter().enumerate() {
+        // Scale the original point for the current level.
+        let x = prev_x / lv.scale;
+        let y = prev_y / lv.scale;
+
+        // Add the current displacement, scaled for this level.
+        let mut dx = displacements[idx].0 / lv.scale;
+        let mut dy = displacements[idx].1 / lv.scale;
+
+        // The window must stay inside the previous image to build the patch.
+        let Some(prev_win) = Window::new(x, y, lv.radius, lv.width, lv.height) else {
+            out[idx].status = TrackStatus::OutOfBounds;
+            continue;
+        };
+
+        // Spatial gradient matrix and cached previous/gradient patches.
+        let (gxx, gxy, gyy) = build_patch(lv, &prev_win, prev_patch, ix_patch, iy_patch);
+
+        // Reject low-texture windows up front (normalized by window area so
+        // the threshold does not depend on `window_size`).
+        let min_eig = min_eigenvalue(gxx, gxy, gyy) / n_pixels as f32;
+        if min_eig < lv.min_eigen_threshold {
+            out[idx].status = TrackStatus::LowTexture;
+            if lv.is_finest {
+                out[idx].error = window_error(lv, x + dx, y + dy, prev_patch);
+            }
+            continue;
+        }
+
+        let Some((inv_h00, inv_h01, inv_h11)) = invert_2x2(gxx, gxy, gyy, det_epsilon) else {
+            out[idx].status = TrackStatus::LowTexture;
+            continue;
+        };
+
+        // Refine the displacement at the current level.
+        let mut converged = false;
+        let mut out_of_bounds = false;
+        let mut diverged = false;
+        let mut prev_step = (0.0f32, 0.0f32);
+        for iteration in 0..lv.max_iterations {
+            let Some(win) = Window::new(x + dx, y + dy, lv.radius, lv.width, lv.height) else {
+                out_of_bounds = true;
+                break;
+            };
+
+            let (bx, by) = lk_step(lv, &win, prev_patch, ix_patch, iy_patch);
+
+            let ddx = inv_h00 * bx + inv_h01 * by;
+            let ddy = inv_h01 * bx + inv_h11 * by;
+            dx += ddx;
+            dy += ddy;
+
+            // Guard against runaway steps.
+            if !dx.is_finite()
+                || !dy.is_finite()
+                || ddx.abs() > window_limit
+                || ddy.abs() > window_limit
+            {
+                diverged = true;
+                break;
+            }
+
+            if ddx.abs() < CONVERGENCE_EPSILON && ddy.abs() < CONVERGENCE_EPSILON {
+                converged = true;
+                break;
+            }
+
+            // Two consecutive steps that cancel mean the estimate is bouncing
+            // across the optimum; settle on the midpoint.
+            if iteration > 0
+                && (ddx + prev_step.0).abs() < CONVERGENCE_EPSILON
+                && (ddy + prev_step.1).abs() < CONVERGENCE_EPSILON
+            {
+                dx -= ddx * 0.5;
+                dy -= ddy * 0.5;
+                converged = true;
+                break;
+            }
+            prev_step = (ddx, ddy);
+        }
+
+        out[idx].status = if out_of_bounds {
+            TrackStatus::OutOfBounds
+        } else if diverged || !converged {
+            TrackStatus::Diverged
+        } else {
+            TrackStatus::Tracked
+        };
+
+        // Update the total displacement with the current level scale.
+        displacements[idx] = (dx * lv.scale, dy * lv.scale);
+
+        if lv.is_finest {
+            out[idx].error = if out_of_bounds {
+                f32::INFINITY
+            } else {
+                window_error(lv, x + dx, y + dy, prev_patch)
+            };
+        }
+    }
+}
+
+/// A sampling window anchored at an integer top-left corner. Because the
+/// window offsets are integers, every sample shares the same fractional
+/// position and therefore the same four bilinear weights; each window row is
+/// then a contiguous run of `window_size + 1` pixels from two image rows.
+struct Window {
+    x0: usize,
+    y0: usize,
+    w00: f32,
+    w10: f32,
+    w01: f32,
+    w11: f32,
+}
+
+impl Window {
+    /// Returns `None` when the full 2x2 bilinear footprint of the window around
+    /// `(cx, cy)` is not inside a `width` x `height` image.
+    #[inline(always)]
+    fn new(cx: f32, cy: f32, radius: usize, width: usize, height: usize) -> Option<Window> {
+        let r = radius as f32;
+        // Written so that NaN coordinates fail the test.
+        if !(cx >= r && cy >= r && cx < width as f32 - r - 1.0 && cy < height as f32 - r - 1.0) {
+            return None;
+        }
+        let fx0 = cx.floor();
+        let fy0 = cy.floor();
+        let fx = cx - fx0;
+        let fy = cy - fy0;
+        Some(Window {
+            x0: fx0 as usize - radius,
+            y0: fy0 as usize - radius,
+            w00: (1.0 - fx) * (1.0 - fy),
+            w10: fx * (1.0 - fy),
+            w01: (1.0 - fx) * fy,
+            w11: fx * fy,
+        })
+    }
+
+    /// The same window with every weight multiplied by `factor`.
+    #[inline(always)]
+    fn scaled(&self, factor: f32) -> Window {
+        Window {
+            x0: self.x0,
+            y0: self.y0,
+            w00: self.w00 * factor,
+            w10: self.w10 * factor,
+            w01: self.w01 * factor,
+            w11: self.w11 * factor,
+        }
+    }
+
+    /// The two image rows feeding window row `j`: `size + 1` pixels each.
+    #[inline(always)]
+    fn rows<'a, T>(
+        &self,
+        data: &'a [T],
+        width: usize,
+        j: usize,
+        size: usize,
+    ) -> (&'a [T], &'a [T]) {
+        let start = (self.y0 + j) * width + self.x0;
+        (
+            &data[start..start + size + 1],
+            &data[start + width..start + width + size + 1],
+        )
+    }
+}
+
+/// Bilinear samples of `L` consecutive window pixels from two source rows.
+#[inline(always)]
+fn sample_lanes<T: Copy + Into<f32>, const L: usize>(win: &Window, a: &[T], b: &[T]) -> [f32; L] {
+    let a0: &[T; L] = a[..L].try_into().unwrap();
+    let a1: &[T; L] = a[1..=L].try_into().unwrap();
+    let b0: &[T; L] = b[..L].try_into().unwrap();
+    let b1: &[T; L] = b[1..=L].try_into().unwrap();
+    let mut s = [0f32; L];
+    for k in 0..L {
+        s[k] = win.w00 * a0[k].into()
+            + win.w10 * a1[k].into()
+            + win.w01 * b0[k].into()
+            + win.w11 * b1[k].into();
+    }
+    s
+}
+
+#[inline(always)]
+fn total<const L: usize>(acc: &[f32; L]) -> f32 {
+    acc.iter().sum()
+}
+
+/// Fills the previous-image and gradient patches for `win` and returns the
+/// spatial gradient matrix `(gxx, gxy, gyy)`.
+#[inline(always)]
+fn build_patch(
+    lv: &Level,
+    win: &Window,
+    prev_patch: &mut [f32],
+    ix_patch: &mut [f32],
+    iy_patch: &mut [f32],
+) -> (f32, f32, f32) {
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn lanes<const L: usize>(
+        win: &Window,
+        gwin: &Window,
+        (pa, pb): (&[u8], &[u8]),
+        (xa, xb): (&[i16], &[i16]),
+        (ya, yb): (&[i16], &[i16]),
+        p: &mut [f32],
+        ox: &mut [f32],
+        oy: &mut [f32],
+        acc: &mut [[f32; L]; 3],
+    ) {
+        let s = sample_lanes::<u8, L>(win, pa, pb);
+        let sx = sample_lanes::<i16, L>(gwin, xa, xb);
+        let sy = sample_lanes::<i16, L>(gwin, ya, yb);
+        let p: &mut [f32; L] = (&mut p[..L]).try_into().unwrap();
+        let ox: &mut [f32; L] = (&mut ox[..L]).try_into().unwrap();
+        let oy: &mut [f32; L] = (&mut oy[..L]).try_into().unwrap();
+        *p = s;
+        *ox = sx;
+        *oy = sy;
+        for k in 0..L {
+            acc[0][k] += sx[k] * sx[k];
+            acc[1][k] += sx[k] * sy[k];
+            acc[2][k] += sy[k] * sy[k];
+        }
+    }
+
+    let size = lv.window_size;
+    // Scharr outputs are 32x the intensity slope.
+    let gwin = win.scaled(1.0 / 32.0);
+    let mut acc8 = [[0f32; 8]; 3];
+    let mut acc4 = [[0f32; 4]; 3];
+    let mut acc1 = [[0f32; 1]; 3];
+
+    for j in 0..size {
+        let (pa, pb) = win.rows(lv.prev, lv.width, j, size);
+        let (xa, xb) = win.rows(lv.grad_x, lv.width, j, size);
+        let (ya, yb) = win.rows(lv.grad_y, lv.width, j, size);
+        let p = &mut prev_patch[j * size..][..size];
+        let ox = &mut ix_patch[j * size..][..size];
+        let oy = &mut iy_patch[j * size..][..size];
+
+        let mut i = 0;
+        while i + 8 <= size {
+            lanes::<8>(
+                win,
+                &gwin,
+                (&pa[i..], &pb[i..]),
+                (&xa[i..], &xb[i..]),
+                (&ya[i..], &yb[i..]),
+                &mut p[i..],
+                &mut ox[i..],
+                &mut oy[i..],
+                &mut acc8,
+            );
+            i += 8;
+        }
+        if i + 4 <= size {
+            lanes::<4>(
+                win,
+                &gwin,
+                (&pa[i..], &pb[i..]),
+                (&xa[i..], &xb[i..]),
+                (&ya[i..], &yb[i..]),
+                &mut p[i..],
+                &mut ox[i..],
+                &mut oy[i..],
+                &mut acc4,
+            );
+            i += 4;
+        }
+        while i < size {
+            lanes::<1>(
+                win,
+                &gwin,
+                (&pa[i..], &pb[i..]),
+                (&xa[i..], &xb[i..]),
+                (&ya[i..], &yb[i..]),
+                &mut p[i..],
+                &mut ox[i..],
+                &mut oy[i..],
+                &mut acc1,
+            );
+            i += 1;
+        }
+    }
+
+    (
+        total(&acc8[0]) + total(&acc4[0]) + total(&acc1[0]),
+        total(&acc8[1]) + total(&acc4[1]) + total(&acc1[1]),
+        total(&acc8[2]) + total(&acc4[2]) + total(&acc1[2]),
+    )
+}
+
+/// One Lucas-Kanade update: the gradient-weighted residual `(bx, by)` between
+/// the cached previous patch and the next image sampled at `win`.
+#[inline(always)]
+fn lk_step(
+    lv: &Level,
+    win: &Window,
+    prev_patch: &[f32],
+    ix_patch: &[f32],
+    iy_patch: &[f32],
+) -> (f32, f32) {
+    #[inline(always)]
+    fn lanes<const L: usize>(
+        win: &Window,
+        (a, b): (&[u8], &[u8]),
+        p: &[f32],
+        gx: &[f32],
+        gy: &[f32],
+        acc: &mut [[f32; L]; 2],
+    ) {
+        let s = sample_lanes::<u8, L>(win, a, b);
+        let p: &[f32; L] = p[..L].try_into().unwrap();
+        let gx: &[f32; L] = gx[..L].try_into().unwrap();
+        let gy: &[f32; L] = gy[..L].try_into().unwrap();
+        for k in 0..L {
+            let e = p[k] - s[k];
+            acc[0][k] += gx[k] * e;
+            acc[1][k] += gy[k] * e;
+        }
+    }
+
+    let size = lv.window_size;
+    let mut acc8 = [[0f32; 8]; 2];
+    let mut acc4 = [[0f32; 4]; 2];
+    let mut acc1 = [[0f32; 1]; 2];
+
+    for j in 0..size {
+        let (a, b) = win.rows(lv.curr, lv.width, j, size);
+        let p = &prev_patch[j * size..][..size];
+        let gx = &ix_patch[j * size..][..size];
+        let gy = &iy_patch[j * size..][..size];
+
+        let mut i = 0;
+        while i + 8 <= size {
+            lanes::<8>(
+                win,
+                (&a[i..], &b[i..]),
+                &p[i..],
+                &gx[i..],
+                &gy[i..],
+                &mut acc8,
+            );
+            i += 8;
+        }
+        if i + 4 <= size {
+            lanes::<4>(
+                win,
+                (&a[i..], &b[i..]),
+                &p[i..],
+                &gx[i..],
+                &gy[i..],
+                &mut acc4,
+            );
+            i += 4;
+        }
+        while i < size {
+            lanes::<1>(
+                win,
+                (&a[i..], &b[i..]),
+                &p[i..],
+                &gx[i..],
+                &gy[i..],
+                &mut acc1,
+            );
+            i += 1;
+        }
+    }
+
+    (
+        total(&acc8[0]) + total(&acc4[0]) + total(&acc1[0]),
+        total(&acc8[1]) + total(&acc4[1]) + total(&acc1[1]),
+    )
+}
+
+/// Mean absolute photometric residual between the cached previous patch and the
+/// next image sampled around `(cx, cy)`. Returns [`f32::INFINITY`] if the window
+/// is out of bounds.
+#[inline(always)]
+fn window_error(lv: &Level, cx: f32, cy: f32, prev_patch: &[f32]) -> f32 {
+    #[inline(always)]
+    fn lanes<const L: usize>(win: &Window, (a, b): (&[u8], &[u8]), p: &[f32], acc: &mut [f32; L]) {
+        let s = sample_lanes::<u8, L>(win, a, b);
+        let p: &[f32; L] = p[..L].try_into().unwrap();
+        for k in 0..L {
+            acc[k] += (p[k] - s[k]).abs();
+        }
+    }
+
+    let Some(win) = Window::new(cx, cy, lv.radius, lv.width, lv.height) else {
+        return f32::INFINITY;
+    };
+    let size = lv.window_size;
+    let mut acc8 = [0f32; 8];
+    let mut acc4 = [0f32; 4];
+    let mut acc1 = [0f32; 1];
+
+    for j in 0..size {
+        let (a, b) = win.rows(lv.curr, lv.width, j, size);
+        let p = &prev_patch[j * size..][..size];
+        let mut i = 0;
+        while i + 8 <= size {
+            lanes::<8>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc8);
+            i += 8;
+        }
+        if i + 4 <= size {
+            lanes::<4>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc4);
+            i += 4;
+        }
+        while i < size {
+            lanes::<1>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc1);
+            i += 1;
+        }
+    }
+
+    (total(&acc8) + total(&acc4) + total(&acc1)) / (size * size) as f32
 }
 
 /// Track points prev->next, then re-track the results next->prev, and flag any
@@ -482,42 +931,6 @@ fn min_eigenvalue(a: f32, b: f32, c: f32) -> f32 {
     (trace - disc) / 2.0
 }
 
-/// Mean absolute photometric residual between the cached previous patch and the
-/// next image sampled at `(cx, cy)`. Returns [`f32::INFINITY`] if the window is
-/// out of bounds.
-fn window_error(
-    img: &GrayImage,
-    prev_patch: &[f32],
-    offsets: &[(f32, f32)],
-    cx: f32,
-    cy: f32,
-    radius: usize,
-) -> f32 {
-    if !in_bounds(img, cx, cy, radius) {
-        return f32::INFINITY;
-    }
-
-    let mut sum = 0.0f32;
-    for (i, (ox, oy)) in offsets.iter().enumerate() {
-        let curr = interpolate(img, cx + ox, cy + oy);
-        sum += (prev_patch[i] - curr).abs();
-    }
-    sum / offsets.len() as f32
-}
-
-/// Fills `offsets` with the `(dx, dy)` window sample positions for the given
-/// radius, reusing the existing capacity.
-fn build_window_offsets_into(radius: usize, offsets: &mut Vec<(f32, f32)>) {
-    offsets.clear();
-    offsets.reserve((2 * radius + 1) * (2 * radius + 1));
-
-    for j in -(radius as i32)..=radius as i32 {
-        for i in -(radius as i32)..=radius as i32 {
-            offsets.push((i as f32, j as f32));
-        }
-    }
-}
-
 fn invert_2x2(a00: f32, a01: f32, a11: f32, det_epsilon: f32) -> Option<(f32, f32, f32)> {
     let det = a00 * a11 - a01 * a01;
     if det.abs() <= det_epsilon {
@@ -526,120 +939,6 @@ fn invert_2x2(a00: f32, a01: f32, a11: f32, det_epsilon: f32) -> Option<(f32, f3
 
     let inv_det = 1.0 / det;
     Some((a11 * inv_det, -a01 * inv_det, a00 * inv_det))
-}
-
-/// Checks that the window stays within image bounds
-fn in_bounds(img: &GrayImage, x: f32, y: f32, radius: usize) -> bool {
-    let (w, h) = (img.width() as f32, img.height() as f32);
-    x >= radius as f32 && x < w - radius as f32 && y >= radius as f32 && y < h - radius as f32
-}
-
-/// Bilinear interpolation of the pixel value
-fn interpolate(img: &GrayImage, x: f32, y: f32) -> f32 {
-    let w = img.width() as i32;
-    let h = img.height() as i32;
-    let x0 = x.floor() as i32;
-    let y0 = y.floor() as i32;
-
-    let dx = x - x0 as f32;
-    let dy = y - y0 as f32;
-
-    let data = img.as_raw();
-
-    // Fast path: the full 2x2 footprint is inside the image, so all four reads
-    // are provably in bounds. This is the overwhelmingly common case in the LK
-    // loop (the window is bounds-checked before sampling), and it avoids the
-    // per-sample `Option`/branch machinery of `get_pixel_checked` — the single
-    // hottest cost in tracking, and especially expensive under WASM where
-    // bounds checks are not elided.
-    if x0 >= 0 && y0 >= 0 && x0 + 1 < w && y0 + 1 < h {
-        let stride = w as usize;
-        let base = y0 as usize * stride + x0 as usize;
-        // SAFETY: x0>=0, y0>=0, x0+1<w, y0+1<h proven above, and the buffer is
-        // exactly w*h long, so base, base+1, base+stride, base+stride+1 are all
-        // valid indices.
-        let (p00, p10, p01, p11) = unsafe {
-            (
-                *data.get_unchecked(base) as f32,
-                *data.get_unchecked(base + 1) as f32,
-                *data.get_unchecked(base + stride) as f32,
-                *data.get_unchecked(base + stride + 1) as f32,
-            )
-        };
-        // Same term order as the slow path below for bit-identical results.
-        return p00 * (1.0 - dx) * (1.0 - dy)
-            + p01 * (1.0 - dx) * dy
-            + p10 * dx * (1.0 - dy)
-            + p11 * dx * dy;
-    }
-
-    // Slow path: replicate the zero-padded out-of-bounds behavior at the border.
-    let x1 = x0 + 1;
-    let y1 = y0 + 1;
-    let mut sum = 0.0;
-    for (sx, sy) in &[(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
-        let px = if *sx >= 0 && *sy >= 0 && *sx < w && *sy < h {
-            data[*sy as usize * w as usize + *sx as usize] as f32
-        } else {
-            0.0
-        };
-
-        let wx = if sx == &x0 { 1.0 - dx } else { dx };
-        let wy = if sy == &y0 { 1.0 - dy } else { dy };
-
-        sum += px * wx * wy;
-    }
-
-    sum
-}
-
-/// Bilinear interpolation over a raw `i16` gradient buffer (`width * height`,
-/// row-major). Out-of-bounds samples read as 0, matching [`interpolate`].
-fn interpolate_i16(data: &[i16], width: u32, height: u32, x: f32, y: f32) -> f32 {
-    let w = width as i32;
-    let h = height as i32;
-    let x0 = x.floor() as i32;
-    let y0 = y.floor() as i32;
-
-    let dx = x - x0 as f32;
-    let dy = y - y0 as f32;
-
-    // Fast path: full 2x2 footprint in bounds (see `interpolate`).
-    if x0 >= 0 && y0 >= 0 && x0 + 1 < w && y0 + 1 < h {
-        let stride = width as usize;
-        let base = y0 as usize * stride + x0 as usize;
-        // SAFETY: footprint proven in bounds and `data` is width*height long.
-        let (p00, p10, p01, p11) = unsafe {
-            (
-                *data.get_unchecked(base) as f32,
-                *data.get_unchecked(base + 1) as f32,
-                *data.get_unchecked(base + stride) as f32,
-                *data.get_unchecked(base + stride + 1) as f32,
-            )
-        };
-        return p00 * (1.0 - dx) * (1.0 - dy)
-            + p01 * (1.0 - dx) * dy
-            + p10 * dx * (1.0 - dy)
-            + p11 * dx * dy;
-    }
-
-    let x1 = x0 + 1;
-    let y1 = y0 + 1;
-    let mut sum = 0.0;
-    for (sx, sy) in &[(x0, y0), (x0, y1), (x1, y0), (x1, y1)] {
-        let px = if *sx >= 0 && *sy >= 0 && *sx < w && *sy < h {
-            data[*sy as usize * width as usize + *sx as usize] as f32
-        } else {
-            0.0
-        };
-
-        let wx = if sx == &x0 { 1.0 - dx } else { dx };
-        let wy = if sy == &y0 { 1.0 - dy } else { dy };
-
-        sum += px * wx * wy;
-    }
-
-    sum
 }
 
 /// Reusable owner of every buffer the tracking hot path touches: both frame
@@ -761,7 +1060,8 @@ impl TrackerContext {
 
 #[cfg(test)]
 mod tests {
-    use super::invert_2x2;
+    use super::*;
+    use image::Luma;
 
     #[test]
     fn invert_2x2_returns_inverse_components() {
@@ -775,5 +1075,80 @@ mod tests {
     #[test]
     fn invert_2x2_rejects_singular_matrix() {
         assert!(invert_2x2(1.0, 2.0, 4.0, 1e-6).is_none());
+    }
+
+    /// Reference bilinear sample with the crate's pixel-center convention.
+    fn bilinear(img: &GrayImage, x: f32, y: f32) -> f32 {
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let px = |dx: u32, dy: u32| img.get_pixel(x0 as u32 + dx, y0 as u32 + dy)[0] as f32;
+        px(0, 0) * (1.0 - fx) * (1.0 - fy)
+            + px(1, 0) * fx * (1.0 - fy)
+            + px(0, 1) * (1.0 - fx) * fy
+            + px(1, 1) * fx * fy
+    }
+
+    #[test]
+    fn window_sampling_matches_per_pixel_bilinear_reference() {
+        let img = GrayImage::from_fn(40, 30, |x, y| Luma([((x * 37 + y * 11) ^ (x * y)) as u8]));
+        let mut grad_x = vec![0i16; 40 * 30];
+        let mut grad_y = vec![0i16; 40 * 30];
+        compute_gradients_into(&img, &mut grad_x, &mut grad_y);
+
+        for &size in &[1usize, 5, 7, 11, 21] {
+            let radius = size / 2;
+            let lv = Level {
+                prev: img.as_raw(),
+                curr: img.as_raw(),
+                grad_x: &grad_x,
+                grad_y: &grad_y,
+                width: 40,
+                height: 30,
+                scale: 1.0,
+                is_finest: true,
+                window_size: size,
+                radius,
+                max_iterations: 1,
+                min_eigen_threshold: 0.0,
+            };
+            let (cx, cy) = (17.3f32, 14.6f32);
+            let win = Window::new(cx, cy, radius, 40, 30).unwrap();
+            let mut patch = vec![0f32; size * size];
+            let mut ix = vec![0f32; size * size];
+            let mut iy = vec![0f32; size * size];
+            build_patch(&lv, &win, &mut patch, &mut ix, &mut iy);
+
+            for j in 0..size {
+                for i in 0..size {
+                    let (sx, sy) = (
+                        cx + (i as f32 - radius as f32),
+                        cy + (j as f32 - radius as f32),
+                    );
+                    let expected = bilinear(&img, sx, sy);
+                    let got = patch[j * size + i];
+                    assert!(
+                        (got - expected).abs() < 1e-3,
+                        "size {size} at ({i},{j}): {got} vs {expected}"
+                    );
+                }
+            }
+            // The next image is the previous image, so the residual at the same
+            // position is zero and a step away from it is not.
+            assert!(window_error(&lv, cx, cy, &patch) < 1e-4);
+            let (bx, by) = lk_step(&lv, &win, &patch, &ix, &iy);
+            assert!(
+                bx.abs() < 1e-2 && by.abs() < 1e-2,
+                "size {size}: ({bx}, {by})"
+            );
+        }
+    }
+
+    #[test]
+    fn window_rejects_footprints_touching_the_border() {
+        assert!(Window::new(10.0, 10.0, 10, 40, 40).is_some());
+        assert!(Window::new(9.9, 10.0, 10, 40, 40).is_none());
+        assert!(Window::new(28.9, 10.0, 10, 40, 40).is_some());
+        assert!(Window::new(29.0, 10.0, 10, 40, 40).is_none());
+        assert!(Window::new(f32::NAN, 10.0, 10, 40, 40).is_none());
     }
 }

@@ -1,0 +1,12 @@
+{
+  "name": "opencv-compare",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Speed and parity harness: optical-flow-lk (wasm) vs OpenCV.js",
+  "scripts": {
+    "bench": "node harness.cjs"
+  },
+  "dependencies": {
+    "@techstark/opencv-js": "4.11.0-release.1"
+  }
+}

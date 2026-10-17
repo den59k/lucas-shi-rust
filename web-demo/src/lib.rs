@@ -4,8 +4,8 @@
 
 use image::{imageops, GrayImage, ImageBuffer};
 use optical_flow_lk::{
-    good_features_to_track, good_features_to_track_grid, TrackStatus, TrackerContext,
-    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD,
+    good_features_to_track, DetectorContext, TrackStatus, TrackerContext, DEFAULT_FB_THRESHOLD,
+    DEFAULT_MIN_EIGEN_THRESHOLD,
 };
 use wasm_bindgen::prelude::*;
 
@@ -25,6 +25,7 @@ pub struct Tracker {
     /// this, to cull drifters and partially-occluded points.
     max_error: f32,
     ctx: TrackerContext,
+    detector: DetectorContext,
     prev: Option<GrayImage>,
     points: Vec<(f32, f32)>,
     /// Per-point velocity (level-0 px/frame), kept in lockstep with `points`.
@@ -48,6 +49,7 @@ impl Tracker {
             fb_threshold: DEFAULT_FB_THRESHOLD,
             max_error: 30.0,
             ctx: TrackerContext::new(),
+            detector: DetectorContext::new(),
             prev: None,
             points: Vec::new(),
             vel: Vec::new(),
@@ -90,7 +92,7 @@ impl Tracker {
 
         let existing = self.points.clone();
         let feats = match self.prev.as_ref() {
-            Some(prev) => good_features_to_track_grid(
+            Some(prev) => self.detector.detect_grid(
                 prev,
                 cols,
                 rows,
@@ -102,7 +104,7 @@ impl Tracker {
             None => return self.points.len(),
         };
 
-        for (x, y, _q) in feats {
+        for &(x, y, _q) in feats {
             self.points.push((x as f32, y as f32));
             self.vel.push((0.0, 0.0));
         }

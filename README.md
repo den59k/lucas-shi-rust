@@ -37,7 +37,8 @@ let next: GrayImage = open("examples/input2.png").unwrap().into_luma8();
 let prev_pyr = build_pyramid(&prev, 4);
 let next_pyr = build_pyramid(&next, 4);
 
-let mut corners = good_features_to_track(&prev, 0.1, 5);
+// Keep corners scoring at least 1% of the strongest one, at least 5px apart.
+let mut corners = good_features_to_track(&prev, 0.01, 5);
 corners.truncate(100);
 let points: Vec<(f32, f32)> = corners.iter().map(|&(x, y, _)| (x as f32, y as f32)).collect();
 
@@ -72,10 +73,41 @@ let results = ctx.track_fb(
 // Points flagged `TrackStatus::FbInconsistent` failed the round-trip.
 ```
 
+Detection has the same shape. A [`DetectorContext`] owns the gradient, tensor
+and score planes plus the spacing grid, so `detect` / `detect_grid` allocate
+nothing after the first frame:
+
+```rust
+use optical_flow_lk::DetectorContext;
+
+let mut detector = DetectorContext::new();
+// Top up lost tracks every few frames: 6x4 grid, 3 per cell, quality 0.05,
+// at least 12 px from each other and from the points already tracked.
+let fresh = detector.detect_grid(&prev, 6, 4, 3, 0.05, 12, &points);
+```
+
 [`TrackerContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.TrackerContext.html
+[`DetectorContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.DetectorContext.html
 
 > The original `calc_optical_flow` is still available but **deprecated** since
 > 0.3.0 — prefer `calc_optical_flow_ex` (status + error) or `TrackerContext`.
+
+## Performance
+
+Measured against OpenCV 4.11 on the bundled 720×405 frame pair, medians of 100
+calls on an AMD Ryzen 9 9900X. The harness, parameters and caveats are in
+[`benches/opencv-compare/`](benches/opencv-compare/).
+
+| | Detect, ms | Track 200 points, ms |
+|---|---:|---:|
+| this crate, wasm `simd128` | 1.6 | 4.2 |
+| OpenCV.js 4.11 (wasm, scalar build) | 2.4 | 5.8 |
+| this crate, native (AVX2) | 1.0 | 3.3 |
+| OpenCV native, 1 thread | 2.0 | 2.3 |
+
+Corners agree with OpenCV's to the pixel: 97% of this crate's corners have an
+OpenCV Scharr corner within 1.5 px. Tracked endpoints agree to a median of
+0.004 px on points both libraries track.
 
 ## Live demo
 

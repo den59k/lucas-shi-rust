@@ -34,6 +34,15 @@
 - Complete plain detection on the five benchmark inputs is 3.4-6.2x faster
   natively (aarch64) and 2.1-6.0x faster under Node/WASI in the recorded run.
   See [timings, confidence intervals and output comparisons](benches/results/scoring-performance-2026-10-17.md).
+  These figures compare against the full-plane detector before this work and
+  were recorded before merging the `DetectorContext` changes below.
+- On x86, an AVX2 copy of the detector pipeline is selected at runtime.
+- Tracking: window sampling now hoists the bilinear weights, reads contiguous
+  row slices and accumulates in lanes the compiler vectorizes, with a
+  runtime-selected AVX2 copy on x86. On the bundled 720×405 frame pair, 200
+  points, 21 px window, 4 levels, Ryzen 9 9900X: 21.8 → 3.3 ms native,
+  24.4 → 4.2 ms in wasm with `simd128`.
+- Scalar wasm builds no longer warn about an unused `simd128` import.
 
 ### Security
 
@@ -55,9 +64,29 @@
   validate discovered benchmark IDs, and record whole-call and stage results on
   native and WASI without adding profiling code to the library.
 
-Public API signatures and LK tracking are unchanged. Detected positions and
-scores can change as a consequence of these corrections; existing detection
-thresholds may need retuning. The score normalization is preserved, but eliminating
-integer truncation changes responses and selected points again. Detection keeps
-one f32 score plane and a few i32/f32 row buffers instead of three tensor planes.
-The allocation-free detector and f32 image paths are separate work.
+Detected positions and scores can change as a consequence of these
+corrections; existing detection thresholds may need retuning. Eliminating the
+integer gradient and filter truncation changes responses and selected points
+again.
+
+### Added
+
+- `DetectorContext`: owns the gradient planes, structure-tensor row buffers,
+  score plane, candidate list and spacing grid, so `detect` / `detect_grid`
+  perform no heap allocation after the first frame. The free detection functions
+  are now thin wrappers over it. Covered by the zero-allocation test.
+- `CONVERGENCE_EPSILON` documents the per-level Lucas-Kanade stopping threshold.
+- `benches/opencv-compare/`: a parity and speed harness against OpenCV, native
+  and OpenCV.js.
+
+### Changed
+
+- Lucas-Kanade stops once a step is below 0.01 px (was 0.001), and also when two
+  consecutive steps cancel, settling on their midpoint. This matches OpenCV's
+  effective criterion. Points that previously hit the iteration cap and came
+  back `Diverged` now mostly converge; endpoints of already-converged points
+  move by under 0.06 px.
+- The tracking window must keep its full bilinear footprint inside the image.
+  Positions within one pixel of the right or bottom border, which were
+  previously sampled with zero padding, now report `OutOfBounds`.
+- The web demo keeps a `DetectorContext` for its grid top-up.
