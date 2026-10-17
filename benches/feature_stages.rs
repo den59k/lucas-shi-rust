@@ -38,7 +38,7 @@ fn sort(points: &mut [(u32, u32, f32)]) {
     points.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal));
 }
 
-// Same dense flag buffer and comparisons as production NMS, with an explicit
+// Historical dense flag buffer and neighbor comparisons, with an explicit
 // supplied score floor before neighborhood work. Neighbor scores stay intact.
 fn screened_nms(mut scores: Points, width: u32, height: u32, threshold: f32) -> Points {
     let mut keep = vec![false; scores.len()];
@@ -83,13 +83,14 @@ fn bench_stages(c: &mut Criterion) {
         let (w, h) = case.image.dimensions();
         let gradients = utils::fast_gradients::compute_gradients(&case.image);
         let scores = detector::tensor_scores(&gradients.0, &gradients.1);
+        let values = detector::score_values(&scores);
         // Dense per-pixel points for the bench-local screening baseline below.
         let score_points: Points = (0..w * h)
-            .zip(&scores)
+            .zip(&values)
             .map(|(i, &q)| (i % w, i / w, q))
             .collect();
-        let maxima = detector::nms(&scores, w, h);
-        let mut floored = detector::floored_nms(&scores, w, h, QUALITY);
+        let maxima = detector::nms(&mut scores.clone(), w, h);
+        let mut floored = detector::floored_nms(&mut scores.clone(), w, h, QUALITY);
         detector::quality(&mut floored, QUALITY);
         let mut qualified = maxima.clone();
         detector::quality(&mut qualified, QUALITY);
@@ -105,13 +106,23 @@ fn bench_stages(c: &mut Criterion) {
             result,
             optical_flow_lk::good_features_to_track(&case.image, QUALITY, DISTANCE)
         );
+        // Full results outside timing allow coordinate/ranking and score comparisons.
+        let points = result
+            .iter()
+            .map(|&(x, y, q)| format!("[{x},{y},{q}]"))
+            .collect::<Vec<_>>()
+            .join(",");
+        eprintln!(
+            "OUTPUT {{\"case\":\"{}\",\"points\":[{}]}}",
+            case.name, points
+        );
         let max_score = maxima.iter().map(|p| p.2).fold(0.0f32, f32::max);
         let relative = QUALITY * max_score;
         eprintln!(
             "COUNTS {{\"case\":\"{}\",\"pixels\":{},\"positive_scores\":{},\"nms_all\":{},\"nms_positive\":{},\"qualified\":{},\"output\":{},\"max_score\":{},\"relative_threshold\":{}}}",
             case.name,
-            scores.len(),
-            scores.iter().filter(|&&q| q > 0.0).count(),
+            values.len(),
+            values.iter().filter(|&&q| q > 0.0).count(),
             maxima.len(),
             maxima.iter().filter(|p| p.2 > 0.0).count(),
             sorted.len(),
@@ -128,7 +139,9 @@ fn bench_stages(c: &mut Criterion) {
             };
         }
         group.bench_function(BenchmarkId::new(case.name, "whole"), |b| {
-            b.iter(|| detector::good_features_to_track(black_box(&case.image), QUALITY, DISTANCE));
+            b.iter(|| {
+                optical_flow_lk::good_features_to_track(black_box(&case.image), QUALITY, DISTANCE)
+            });
         });
         group.bench_function(BenchmarkId::new(case.name, "gradients"), |b| {
             b.iter(|| utils::fast_gradients::compute_gradients(black_box(&case.image)));
@@ -136,8 +149,9 @@ fn bench_stages(c: &mut Criterion) {
         group.bench_function(BenchmarkId::new(case.name, "tensor_scores"), |b| {
             b.iter(|| detector::tensor_scores(black_box(&gradients.0), black_box(&gradients.1)));
         });
-        group.bench_function(BenchmarkId::new(case.name, "nms"), |b| {
-            b.iter(|| detector::nms(black_box(&scores), w, h));
+        stage!("nms", || scores.clone(), |mut p| {
+            let result = detector::nms(black_box(&mut p), w, h);
+            (p, result)
         });
         stage!("quality", || maxima.clone(), |mut p| {
             detector::quality(black_box(&mut p), QUALITY);
@@ -168,7 +182,7 @@ fn bench_stages(c: &mut Criterion) {
                 case.name,
                 absolute,
                 threshold,
-                scores
+                values
                     .iter()
                     .filter(|&&q| q > 0.0 && q >= threshold)
                     .count(),
@@ -176,20 +190,16 @@ fn bench_stages(c: &mut Criterion) {
                 selected.len()
             );
         }
-        group.bench_function(BenchmarkId::new(case.name, "nms_quality"), |b| {
-            b.iter(|| {
-                let mut p = detector::nms(black_box(&scores), w, h);
-                detector::quality(&mut p, QUALITY);
-                p
-            });
+        stage!("nms_quality", || scores.clone(), |mut p| {
+            let mut result = detector::nms(black_box(&mut p), w, h);
+            detector::quality(&mut result, QUALITY);
+            (p, result)
         });
-        // Production path: floor discovery, floored NMS and the quality filter.
-        group.bench_function(BenchmarkId::new(case.name, "floored_nms_quality"), |b| {
-            b.iter(|| {
-                let mut p = detector::floored_nms(black_box(&scores), w, h, QUALITY);
-                detector::quality(&mut p, QUALITY);
-                p
-            });
+        // Complete production selection, including floor discovery when present.
+        stage!("production_nms_quality", || scores.clone(), |mut p| {
+            let mut result = detector::floored_nms(black_box(&mut p), w, h, QUALITY);
+            detector::quality(&mut result, QUALITY);
+            (p, result)
         });
         // Threshold supplied from the untimed reference NMS above. This isolates
         // screening cost; it does not measure discovering a relative threshold.
@@ -210,8 +220,9 @@ fn bench_stages(c: &mut Criterion) {
             (i % w, i / w, q as f32 / 1024.0)
         })
         .collect();
-    let controlled_scores: Vec<f32> = controlled.iter().map(|p| p.2).collect();
-    let maxima = detector::nms(&controlled_scores, w, h);
+    let controlled_values: Vec<f32> = controlled.iter().map(|p| p.2).collect();
+    let controlled_scores = detector::score_plane(&controlled_values, w);
+    let maxima = detector::nms(&mut controlled_scores.clone(), w, h);
     let mut qualified = maxima.clone();
     detector::quality(&mut qualified, QUALITY);
     let mut sorted = qualified.clone();
@@ -234,7 +245,14 @@ fn bench_stages(c: &mut Criterion) {
         fingerprint(&result)
     );
     group.bench_function("controlled/nms", |b| {
-        b.iter(|| detector::nms(black_box(&controlled_scores), w, h))
+        b.iter_batched(
+            || controlled_scores.clone(),
+            |mut p| {
+                let result = detector::nms(black_box(&mut p), w, h);
+                (p, result)
+            },
+            BatchSize::PerIteration,
+        )
     });
     group.bench_function("controlled/quality", |b| {
         b.iter_batched(

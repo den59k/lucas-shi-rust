@@ -25,14 +25,15 @@
   with a three-row ring buffer instead of three full tensor planes. Both box-sum
   passes now stream along rows instead of walking columns.
 - Compute scores in f32 after the exact i64 determinant; the formula has no
-  remaining cancellation. Scores differ from the f64 computation by at most about
-  2 ulp (relative 2.3e-7), so nearly equal scores can swap order before spacing.
+  remaining cancellation. Rounding can differ from the previous f64 intermediates,
+  so nearly equal scores can swap order before spacing.
 - Run non-maximum suppression on a score plane with a separable 3x3 maximum and
   collect only positive maxima. When the global maximum lies inside the image it
   is the strongest local maximum, so the relative quality threshold is applied
-  while collecting. Selected points are unchanged.
-- Whole-call detection on the benchmark inputs is about 3-6x faster natively
-  (aarch64) and 2-6x faster under WASI.
+  while collecting. For a given score plane, selected points are unchanged.
+- Complete plain detection on the five benchmark inputs is 3.4-6.2x faster
+  natively (aarch64) and 2.1-6.0x faster under Node/WASI in the recorded run.
+  See [timings, confidence intervals and output comparisons](benches/results/scoring-performance-2026-10-17.md).
 
 ### Security
 
@@ -50,7 +51,9 @@
   recorded comparisons used 0.5.1 on both revisions and retain that provenance.
 - Measure detector stages and intermediate candidate counts separately, including
   an equal-input selection control and benchmark-only explicit score-floor/NMS
-  experiments. Record native and WASI results without changing production code.
+  experiments. Adapt the comparison runner to full-plane and fused pipelines,
+  validate discovered benchmark IDs, and record whole-call and stage results on
+  native and WASI without adding profiling code to the library.
 
 Public API signatures and LK tracking are unchanged. Detected positions and
 scores can change as a consequence of these corrections; existing detection

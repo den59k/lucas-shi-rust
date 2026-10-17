@@ -18,9 +18,15 @@ async function main() {
         preopens: { "/reports": reports },
         returnOnExit: true,
     });
+    // Direct fd_write imports reproducibly crashed Node 22.22.2 during the
+    // verbose baseline smoke check. A JS boundary avoids that host-call crash.
+    // Detection and clock imports are unchanged; writes occur outside timing.
+    const imports = wasi.getImportObject();
+    const write = imports.wasi_snapshot_preview1.fd_write;
+    imports.wasi_snapshot_preview1.fd_write = (...args) => write(...args);
     const { instance } = await WebAssembly.instantiate(
         fs.readFileSync(modulePath),
-        wasi.getImportObject(),
+        imports,
     );
     process.exitCode = wasi.start(instance);
 }
