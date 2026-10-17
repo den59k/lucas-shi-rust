@@ -1,60 +1,87 @@
+#[cfg(test)]
 use image::{ImageBuffer, Luma};
 
-/// Centered separable 3x3 average without allocating. At boundaries only the
-/// available samples contribute; each pass truncates integer division toward
-/// zero. Empty, single-row, and single-column images are supported.
+/// Centered separable 3x3 average. At boundaries only the available samples
+/// contribute; each pass truncates integer division toward zero. Empty,
+/// single-row, and single-column images are supported. The library itself
+/// uses [`box_filter_3x3_raw`] with a reused scratch buffer.
+#[cfg(test)]
 pub fn box_filter_3x3_in_place(image: &mut ImageBuffer<Luma<i16>, Vec<i16>>) {
-    if image.width() == 0 || image.height() == 0 {
+    let (width, height) = image.dimensions();
+    let mut scratch = Vec::new();
+    box_filter_3x3_raw(image, width as usize, height as usize, &mut scratch);
+}
+
+/// [`box_filter_3x3_in_place`] over a raw row-major `width * height` buffer.
+///
+/// `scratch` holds two rows and is resized as needed; passing the same vector
+/// across calls makes the filter allocation-free in steady state. Both passes
+/// run row by row so the inner loops are contiguous and vectorizable, and the
+/// interior divides by the constant 3 while the one-pixel border is handled
+/// separately.
+#[inline(always)]
+pub fn box_filter_3x3_raw(data: &mut [i16], width: usize, height: usize, scratch: &mut Vec<i16>) {
+    debug_assert_eq!(data.len(), width * height);
+    if width == 0 || height == 0 {
         return;
     }
-    // Apply the separable 3x3 box filter: first across rows, then across columns
-    box_filter_horizontal_3x3_in_place(image);
-    box_filter_vertical_3x3_in_place(image);
+    scratch.resize(2 * width, 0);
+    horizontal_pass(data, width, height, &mut scratch[..width]);
+    vertical_pass(data, width, height, scratch);
 }
 
-fn box_filter_horizontal_3x3_in_place(image: &mut ImageBuffer<Luma<i16>, Vec<i16>>) {
-    let (width, height) = (image.width() as usize, image.height() as usize);
-    let data: &mut [i16] = image;
-
+/// Each row becomes the average of itself and its horizontal neighbours.
+#[inline(always)]
+fn horizontal_pass(data: &mut [i16], width: usize, height: usize, row_copy: &mut [i16]) {
+    if width == 1 {
+        return;
+    }
     for y in 0..height {
-        let row = y * width;
+        let row = &mut data[y * width..(y + 1) * width];
+        row_copy.copy_from_slice(row);
+        let src = &*row_copy;
 
-        // Keep original neighbors in registers: rereading a written pixel would
-        // make this a recursive filter rather than a centered box average.
-        let mut left = 0i32;
-        let mut center = data[row] as i32;
-        for x in 0..width {
-            let right = if x + 1 < width {
-                data[row + x + 1] as i32
-            } else {
-                0
-            };
-            let count = 1 + i32::from(x > 0) + i32::from(x + 1 < width);
-            data[row + x] = ((left + center + right) / count) as i16;
-            left = center;
-            center = right;
+        row[0] = ((src[0] as i32 + src[1] as i32) / 2) as i16;
+        let interior = &mut row[1..width - 1];
+        for (x, out) in interior.iter_mut().enumerate() {
+            let sum = src[x] as i32 + src[x + 1] as i32 + src[x + 2] as i32;
+            *out = (sum / 3) as i16;
         }
+        row[width - 1] = ((src[width - 2] as i32 + src[width - 1] as i32) / 2) as i16;
     }
 }
 
-fn box_filter_vertical_3x3_in_place(image: &mut ImageBuffer<Luma<i16>, Vec<i16>>) {
-    let (width, height) = (image.width() as usize, image.height() as usize);
-    let data: &mut [i16] = image;
+/// Each row becomes the average of itself and its vertical neighbours, using
+/// the original (pre-pass) values of the rows above and below.
+#[inline(always)]
+fn vertical_pass(data: &mut [i16], width: usize, height: usize, scratch: &mut [i16]) {
+    if height == 1 {
+        return;
+    }
+    let (above_copy, current_copy) = scratch.split_at_mut(width);
+    for y in 0..height {
+        // Rows below `y` are still original; `above_copy` preserves row y-1.
+        let (head, tail) = data.split_at_mut((y + 1) * width);
+        let row = &mut head[y * width..];
+        current_copy.copy_from_slice(row);
 
-    for x in 0..width {
-        let mut above = 0i32;
-        let mut center = data[x] as i32;
-        for y in 0..height {
-            let below = if y + 1 < height {
-                data[(y + 1) * width + x] as i32
-            } else {
-                0
-            };
-            let count = 1 + i32::from(y > 0) + i32::from(y + 1 < height);
-            data[y * width + x] = ((above + center + below) / count) as i16;
-            above = center;
-            center = below;
+        if y == 0 {
+            let below = &tail[..width];
+            for x in 0..width {
+                row[x] = ((current_copy[x] as i32 + below[x] as i32) / 2) as i16;
+            }
+        } else if y + 1 < height {
+            let below = &tail[..width];
+            for x in 0..width {
+                let sum = above_copy[x] as i32 + current_copy[x] as i32 + below[x] as i32;
+                row[x] = (sum / 3) as i16;
+            }
+        } else {
+            for x in 0..width {
+                row[x] = ((above_copy[x] as i32 + current_copy[x] as i32) / 2) as i16;
+            }
         }
+        above_copy.copy_from_slice(current_copy);
     }
 }
 

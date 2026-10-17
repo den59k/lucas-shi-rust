@@ -14,7 +14,41 @@
   minimum distance. Previously, a later point could hide an earlier neighbor.
 - Support a zero minimum distance and avoid integer overflow for large distances.
 
-Public API signatures and LK tracking are unchanged. Detected positions and
-scores can change as a consequence of these corrections; existing detection
-thresholds may need retuning. The detector retains its integer gradient and
-filter quantization. The allocation-free detector and f32 paths are separate work.
+Detected positions and scores can change as a consequence of these
+corrections; existing detection thresholds may need retuning. The detector
+retains its integer gradient and filter quantization.
+
+### Added
+
+- `DetectorContext`: owns the gradient, structure-tensor and score planes, the
+  candidate list and the spacing grid, so `detect` / `detect_grid` perform no
+  heap allocation after the first frame. The free detection functions are now
+  thin wrappers over it. Covered by the zero-allocation test.
+- `CONVERGENCE_EPSILON` documents the per-level Lucas-Kanade stopping threshold.
+- `benches/opencv-compare/`: a parity and speed harness against OpenCV, native
+  and OpenCV.js.
+
+### Changed
+
+- Lucas-Kanade stops once a step is below 0.01 px (was 0.001), and also when two
+  consecutive steps cancel, settling on their midpoint. This matches OpenCV's
+  effective criterion. Points that previously hit the iteration cap and came
+  back `Diverged` now mostly converge; endpoints of already-converged points
+  move by under 0.06 px.
+- The tracking window must keep its full bilinear footprint inside the image.
+  Positions within one pixel of the right or bottom border, which were
+  previously sampled with zero padding, now report `OutOfBounds`.
+- The web demo keeps a `DetectorContext` for its grid top-up.
+
+### Performance
+
+Bundled 720×405 frame pair, 200 points, 21 px window, 4 levels, Ryzen 9 9900X:
+
+- Tracking: window sampling now hoists the bilinear weights, reads contiguous
+  row slices and accumulates in lanes the compiler vectorizes, with a
+  runtime-selected AVX2 copy on x86. 21.8 → 3.3 ms native, 24.4 → 4.2 ms in
+  wasm with `simd128`.
+- Detection: row-wise box filter with a constant divisor, non-maximum
+  suppression directly on a flat score plane instead of a per-pixel tuple
+  vector, AVX2 copy on x86. 5.1 → 1.1 ms native, 5.1 → 2.1 ms in wasm.
+- Scalar wasm builds no longer warn about an unused `simd128` import.

@@ -1,7 +1,9 @@
-use image::{GrayImage, ImageBuffer, Luma};
+use image::GrayImage;
+#[cfg(test)]
+use image::{ImageBuffer, Luma};
 #[cfg(target_arch = "aarch64")]
 use std::arch::aarch64::*;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 use std::arch::wasm32::*;
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
@@ -14,15 +16,15 @@ const HORIZONTAL_SCHARR_3X3_OLD: [i32; 9] = [-3, 0, 3, -10, 0, 10, -3, 0, 3];
 #[allow(dead_code)]
 const VERTICAL_SCHARR_3X3_OLD: [i32; 9] = [-3, -10, -3, 0, 0, 0, 3, 10, 3];
 
+#[cfg(test)]
 type GradientProduct = (
     ImageBuffer<Luma<i16>, Vec<i16>>,
     ImageBuffer<Luma<i16>, Vec<i16>>,
 );
 
-/// Computes signed Scharr gradients, allocating fresh output buffers.
-///
-/// Prefer [`compute_gradients_into`] on a hot path so the gradient buffers can
-/// be reused across frames.
+/// Computes signed Scharr gradients, allocating fresh output buffers. The
+/// library itself only uses [`compute_gradients_into`] with reused buffers.
+#[cfg(test)]
 pub fn compute_gradients(img: &GrayImage) -> GradientProduct {
     let (width, height) = img.dimensions();
     let mut grad_x = vec![0i16; (width * height) as usize];

@@ -5,10 +5,14 @@
 //! warmed-up `prepare` + `track` step.
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use image::{GrayImage, Luma};
-use optical_flow_lk::{DEFAULT_MIN_EIGEN_THRESHOLD, TrackerContext};
+use optical_flow_lk::{DEFAULT_MIN_EIGEN_THRESHOLD, DetectorContext, TrackerContext};
+
+/// The allocation counter is global, so measured sections must not overlap.
+static SERIAL: Mutex<()> = Mutex::new(());
 
 struct CountingAllocator;
 
@@ -65,6 +69,10 @@ fn steady_state_track_is_allocation_free() {
 
     let mut ctx = TrackerContext::new();
 
+    // Hold the lock across warm-up too: the counter sees every thread's
+    // allocations, so another test's warm-up must not overlap a measurement.
+    let _serial = SERIAL.lock().unwrap();
+
     // Warm-up: lets every buffer grow to its steady-state capacity.
     for _ in 0..3 {
         ctx.prepare(&prev, &next, 4);
@@ -78,6 +86,7 @@ fn steady_state_track_is_allocation_free() {
     }
 
     // Measured steady-state step.
+    ALLOCS.store(0, Ordering::Relaxed);
     COUNTING.store(true, Ordering::Relaxed);
     ctx.prepare(&prev, &next, 4);
     let results = ctx.track(
@@ -95,5 +104,39 @@ fn steady_state_track_is_allocation_free() {
     assert_eq!(
         allocs, 0,
         "steady-state prepare+track allocated {allocs} times"
+    );
+}
+
+#[test]
+fn steady_state_detection_is_allocation_free() {
+    let img = textured(640, 480, 3);
+    let existing: Vec<(f32, f32)> = (0..24)
+        .map(|i| (50.0 + (i % 6) as f32 * 100.0, 60.0 + (i / 6) as f32 * 110.0))
+        .collect();
+
+    let mut ctx = DetectorContext::new();
+
+    let _serial = SERIAL.lock().unwrap();
+
+    // Warm-up: lets every buffer grow to its steady-state capacity.
+    for _ in 0..3 {
+        ctx.detect(&img, 0.01, 8);
+        ctx.detect_grid(&img, 6, 4, 5, 0.01, 8, &existing);
+    }
+
+    ALLOCS.store(0, Ordering::Relaxed);
+    COUNTING.store(true, Ordering::Relaxed);
+    let plain = ctx.detect(&img, 0.01, 8).len();
+    let grid = ctx.detect_grid(&img, 6, 4, 5, 0.01, 8, &existing).len();
+    COUNTING.store(false, Ordering::Relaxed);
+
+    let allocs = ALLOCS.load(Ordering::Relaxed);
+    assert!(
+        plain > 0 && grid > 0,
+        "detector found nothing on a textured image"
+    );
+    assert_eq!(
+        allocs, 0,
+        "steady-state detect+detect_grid allocated {allocs} times"
     );
 }
