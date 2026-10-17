@@ -1,6 +1,7 @@
 use image::GrayImage;
 
-use crate::pyramid::build_pyramid_into;
+use crate::features::reserve_total;
+use crate::pyramid::{build_pyramid_into, reserve_pyramid};
 use crate::utils::fast_gradients::compute_gradients_into;
 
 /// Default minimum-eigenvalue threshold used by [`calc_optical_flow`].
@@ -169,6 +170,19 @@ struct Scratch {
     displacements: Vec<(f32, f32)>,
     grad_x: Vec<i16>,
     grad_y: Vec<i16>,
+}
+
+impl Scratch {
+    fn reserve(&mut self, capacity: &TrackerCapacity) {
+        let patch = capacity.window_size * capacity.window_size;
+        for buffer in [&mut self.prev_patch, &mut self.ix_patch, &mut self.iy_patch] {
+            reserve_total(buffer, patch);
+        }
+        reserve_total(&mut self.displacements, capacity.points);
+        let pixels = capacity.width as usize * capacity.height as usize;
+        reserve_total(&mut self.grad_x, pixels);
+        reserve_total(&mut self.grad_y, pixels);
+    }
 }
 
 /// Core pyramidal Lucas-Kanade loop, writing one [`TrackResult`] per point into
@@ -941,18 +955,37 @@ fn invert_2x2(a00: f32, a01: f32, a11: f32, det_epsilon: f32) -> Option<(f32, f3
     Some((a11 * inv_det, -a01 * inv_det, a00 * inv_det))
 }
 
+/// Upper bounds for the work a tracker context will see, used to allocate
+/// every buffer up front with [`TrackerContext::with_capacity`] or
+/// [`TrackerContext::reserve`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrackerCapacity {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Pyramid levels passed to `prepare`.
+    pub levels: usize,
+    /// Largest `window_size` passed to `track` / `track_fb`.
+    pub window_size: usize,
+    /// Most points per `track` / `track_fb` call.
+    pub points: usize,
+}
+
 /// Reusable owner of every buffer the tracking hot path touches: both frame
 /// pyramids, the Lucas-Kanade scratch, the result vector and the
 /// forward-backward intermediates.
 ///
 /// Create one per tracking thread and call [`prepare`](Self::prepare) then
-/// [`track`](Self::track) / [`track_fb`](Self::track_fb) each frame. After the
-/// first (warm-up) frame, a steady-state step with a fixed image size, level
-/// count, window size and point count performs **no heap allocation** — all
-/// buffers are resized in place. This is the allocation-free path the VIO
-/// front-end runs every frame; the free functions
-/// ([`calc_optical_flow_ex`], [`calc_optical_flow_fb`]) are thin convenience
-/// wrappers that allocate their own scratch.
+/// [`track`](Self::track) / [`track_fb`](Self::track_fb) each frame. All
+/// buffers are resized in place and reused. To keep allocation out of the
+/// per-frame path, create the context with
+/// [`with_capacity`](Self::with_capacity): frames of the reserved size and
+/// level count, with at most the reserved window size and point count, then
+/// perform **no heap allocation**. Without a reservation the first frame
+/// allocates, and so does any later call with more points than before. The
+/// free functions ([`calc_optical_flow_ex`], [`calc_optical_flow_fb`]) are
+/// thin convenience wrappers that allocate their own scratch.
 #[derive(Default)]
 pub struct TrackerContext {
     prev_pyramid: Vec<GrayImage>,
@@ -969,6 +1002,31 @@ impl TrackerContext {
     /// thereafter.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates a context with every buffer allocated for `capacity`.
+    pub fn with_capacity(capacity: TrackerCapacity) -> Self {
+        let mut context = Self::default();
+        context.reserve(capacity);
+        context
+    }
+
+    /// Allocates every buffer for `capacity` now, so that later calls within
+    /// it do not allocate. Existing capacity is kept.
+    pub fn reserve(&mut self, capacity: TrackerCapacity) {
+        let TrackerCapacity {
+            width,
+            height,
+            levels,
+            points,
+            ..
+        } = capacity;
+        reserve_pyramid(&mut self.prev_pyramid, width, height, levels);
+        reserve_pyramid(&mut self.next_pyramid, width, height, levels);
+        self.scratch.reserve(&capacity);
+        reserve_total(&mut self.results, points);
+        reserve_total(&mut self.forward_pos, points);
+        reserve_total(&mut self.backward, points);
     }
 
     /// Builds the previous- and next-frame pyramids into the context's reusable

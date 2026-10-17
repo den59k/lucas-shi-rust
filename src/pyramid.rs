@@ -1,4 +1,4 @@
-use image::{GrayImage, ImageBuffer};
+use image::{GrayImage, ImageBuffer, Pixel};
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
 use std::arch::wasm32::*;
 
@@ -164,14 +164,49 @@ unsafe fn downsample_2x2_simd128(
 }
 
 /// Ensures `pyramid[index]` exists with the given dimensions, allocating only
-/// when the slot is missing or its size changed.
-fn ensure_level(pyramid: &mut Vec<GrayImage>, index: usize, width: u32, height: u32) {
-    if index < pyramid.len() {
-        if pyramid[index].dimensions() != (width, height) {
-            pyramid[index] = ImageBuffer::new(width, height);
-        }
-    } else {
+/// when the slot is missing or its buffer is too small. The pixel values of a
+/// resized level are unspecified; callers overwrite every pixel.
+fn ensure_level<P>(
+    pyramid: &mut Vec<ImageBuffer<P, Vec<P::Subpixel>>>,
+    index: usize,
+    width: u32,
+    height: u32,
+) where
+    P: Pixel,
+    P::Subpixel: Default,
+{
+    if index == pyramid.len() {
         pyramid.push(ImageBuffer::new(width, height));
+    } else if pyramid[index].dimensions() != (width, height) {
+        let mut pixels = std::mem::take(&mut pyramid[index]).into_raw();
+        pixels.resize(width as usize * height as usize, Default::default());
+        pyramid[index] = ImageBuffer::from_raw(width, height, pixels)
+            .expect("level buffer has exactly width * height pixels");
+    }
+}
+
+/// Dimensions of the levels [`build_pyramid_into`] produces for a `width` x
+/// `height` image and `levels` requested levels.
+fn level_dimensions(width: u32, height: u32, levels: usize) -> impl Iterator<Item = (u32, u32)> {
+    std::iter::successors(Some((width, height)), |&(w, h)| {
+        (w >= 2 && h >= 2).then_some((w / 2, h / 2))
+    })
+    .take(levels.max(1))
+}
+
+/// Allocates every level of a `width` x `height` pyramid with `levels` levels,
+/// so that building it later does not allocate.
+pub(crate) fn reserve_pyramid<P>(
+    pyramid: &mut Vec<ImageBuffer<P, Vec<P::Subpixel>>>,
+    width: u32,
+    height: u32,
+    levels: usize,
+) where
+    P: Pixel,
+    P::Subpixel: Default,
+{
+    for (index, (w, h)) in level_dimensions(width, height, levels).enumerate() {
+        ensure_level(pyramid, index, w, h);
     }
 }
 

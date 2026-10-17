@@ -32,7 +32,7 @@ pub fn good_features_to_track(
 ) -> Vec<(u32, u32, f32)> {
     let mut ctx = DetectorContext::new();
     ctx.detect(image, quality_level, min_distance);
-    std::mem::take(&mut ctx.results)
+    std::mem::take(&mut ctx.selection.results)
 }
 
 /// Finds good feature points with uniform frame coverage by detecting per grid
@@ -82,7 +82,54 @@ pub fn good_features_to_track_grid(
         min_distance,
         existing_points,
     );
-    std::mem::take(&mut ctx.results)
+    std::mem::take(&mut ctx.selection.results)
+}
+
+/// Upper bounds for the work a detector context will see, used to allocate
+/// every buffer up front with [`DetectorContext::with_capacity`] or
+/// [`DetectorContext::reserve`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DetectorCapacity {
+    /// Largest image width in pixels.
+    pub width: u32,
+    /// Largest image height in pixels.
+    pub height: u32,
+    /// Smallest `min_distance` that will be passed; zero reserves for no
+    /// spacing at all.
+    pub min_distance: u32,
+    /// Largest `grid_cols * grid_rows` that will be passed to `detect_grid`.
+    pub grid_cells: u32,
+    /// Most `existing_points` that will be passed to `detect_grid`.
+    pub existing_points: usize,
+}
+
+impl DetectorCapacity {
+    fn max_pixels(&self) -> usize {
+        self.width as usize * self.height as usize
+    }
+
+    /// Interior pixels: every one can be a local maximum on a score plateau.
+    fn max_candidates(&self) -> usize {
+        self.width.saturating_sub(2) as usize * self.height.saturating_sub(2) as usize
+    }
+
+    /// Points that can be pairwise at least `min_distance` apart. Two points
+    /// in one half-open square of side `min_distance / sqrt(2)` are closer, so
+    /// each square holds at most one.
+    fn max_spaced(&self) -> usize {
+        let candidates = self.max_candidates();
+        if self.min_distance < 2 {
+            return candidates;
+        }
+        let side = self.min_distance as f64 / std::f64::consts::SQRT_2;
+        let cells = |length: u32| (length as f64 / side).ceil() as usize + 1;
+        candidates.min(cells(self.width) * cells(self.height))
+    }
+}
+
+/// Grows `buffer`'s capacity to at least `total` elements.
+pub(crate) fn reserve_total<T>(buffer: &mut Vec<T>, total: usize) {
+    buffer.reserve(total.saturating_sub(buffer.len()));
 }
 
 /// Reusable owner of every buffer the Shi-Tomasi detector touches: gradient
@@ -90,17 +137,18 @@ pub fn good_features_to_track_grid(
 /// the spacing grid and the result vector.
 ///
 /// Keep one per detection thread and call [`detect`](Self::detect) or
-/// [`detect_grid`](Self::detect_grid) each time. After the first call with a
-/// given image size, further calls with the same image size, grid size and
-/// spacing perform **no heap allocation**. The free functions
-/// [`good_features_to_track`] and [`good_features_to_track_grid`] create a
-/// context per call.
+/// [`detect_grid`](Self::detect_grid) each time. Buffers grow on demand and are
+/// reused. To keep allocation out of the per-frame path, create the context
+/// with [`with_capacity`](Self::with_capacity): calls within its
+/// [`DetectorCapacity`] then perform **no heap allocation**, whatever the image
+/// content. Without a reservation, the first call allocates, and a later image
+/// with more candidates than any before can still grow a buffer. The free
+/// functions [`good_features_to_track`] and [`good_features_to_track_grid`]
+/// create a context per call.
 #[derive(Default)]
 pub struct DetectorContext {
     planes: Planes,
-    results: Vec<(u32, u32, f32)>,
-    occupancy: OccupancyGrid,
-    cell_count: Vec<u32>,
+    selection: Selection,
 }
 
 impl DetectorContext {
@@ -108,6 +156,20 @@ impl DetectorContext {
     /// and are reused thereafter.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Creates a context with every buffer allocated for `capacity`.
+    pub fn with_capacity(capacity: DetectorCapacity) -> Self {
+        let mut context = Self::default();
+        context.reserve(capacity);
+        context
+    }
+
+    /// Allocates every buffer for `capacity` now, so that later calls within
+    /// it do not allocate. Existing capacity is kept.
+    pub fn reserve(&mut self, capacity: DetectorCapacity) {
+        self.planes.reserve(&capacity);
+        self.selection.reserve(&capacity);
     }
 
     /// Detects corners as [`good_features_to_track`] does, returning them from
@@ -120,15 +182,8 @@ impl DetectorContext {
     ) -> &[(u32, u32, f32)] {
         self.detect_candidates(image, quality_level);
         let (width, height) = image.dimensions();
-        enforce_spacing(
-            &self.planes.candidates,
-            min_distance,
-            width,
-            height,
-            &mut self.occupancy,
-            &mut self.results,
-        );
-        &self.results
+        self.selection
+            .spaced(&self.planes.candidates, min_distance, width, height)
     }
 
     /// Detects corners per grid cell as [`good_features_to_track_grid`] does,
@@ -145,56 +200,20 @@ impl DetectorContext {
         min_distance: u32,
         existing_points: &[(f32, f32)],
     ) -> &[(u32, u32, f32)] {
-        assert!(grid_cols > 0 && grid_rows > 0, "grid must be non-empty");
-
-        self.results.clear();
+        let grid = GridLayout::new(grid_cols, grid_rows, max_per_cell);
         if max_per_cell == 0 {
-            return &self.results;
+            return self.selection.clear();
         }
         self.detect_candidates(image, quality_level);
-        if self.planes.candidates.is_empty() {
-            return &self.results;
-        }
         let (width, height) = image.dimensions();
-
-        // Detection cell of a point, clamped to the grid.
-        let cell_of = |x: f32, y: f32| -> usize {
-            let col = ((x / width as f32) * grid_cols as f32) as u32;
-            let row = ((y / height as f32) * grid_rows as f32) as u32;
-            let col = col.min(grid_cols - 1);
-            let row = row.min(grid_rows - 1);
-            (row * grid_cols + col) as usize
-        };
-
-        // Per-cell occupancy (existing + accepted) against the feature budget.
-        self.cell_count.clear();
-        self.cell_count.resize((grid_cols * grid_rows) as usize, 0);
-        // Spatial hash for min_distance, independent of the detection grid.
-        self.occupancy.reset(width, height, min_distance);
-
-        for &(ex, ey) in existing_points {
-            self.cell_count[cell_of(ex, ey)] += 1;
-            self.occupancy.insert(ex, ey);
-        }
-
-        let min_distance = min_distance as f32;
-        for &(x, y, q) in &self.planes.candidates {
-            let (xf, yf) = (x as f32, y as f32);
-            let cell = cell_of(xf, yf);
-
-            if self.cell_count[cell] >= max_per_cell {
-                continue;
-            }
-            if self.occupancy.has_neighbor_within(xf, yf, min_distance) {
-                continue;
-            }
-
-            self.occupancy.insert(xf, yf);
-            self.cell_count[cell] += 1;
-            self.results.push((x, y, q));
-        }
-
-        &self.results
+        self.selection.grid(
+            &self.planes.candidates,
+            width,
+            height,
+            grid,
+            min_distance,
+            existing_points,
+        )
     }
 
     /// Runs the Shi-Tomasi pipeline, leaving candidate corners sorted by
@@ -209,16 +228,19 @@ impl DetectorContext {
         self.planes.run(image, quality_level);
         let candidates = &mut self.planes.candidates;
         filter_by_quality(candidates, quality_level);
-
-        // Descending quality; ties keep row-major order, which is the order the
-        // candidates were collected in. The unstable sort does not allocate.
-        candidates.sort_unstable_by(|a, b| {
-            b.2.partial_cmp(&a.2)
-                .unwrap_or(Ordering::Equal)
-                .then(a.1.cmp(&b.1))
-                .then(a.0.cmp(&b.0))
-        });
+        sort_by_score(candidates);
     }
+}
+
+/// Descending score; ties keep row-major order, which is the order the
+/// candidates were collected in. The unstable sort does not allocate.
+pub(crate) fn sort_by_score(candidates: &mut [(u32, u32, f32)]) {
+    candidates.sort_unstable_by(|a, b| {
+        b.2.partial_cmp(&a.2)
+            .unwrap_or(Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+            .then(a.0.cmp(&b.0))
+    });
 }
 
 /// The per-pixel stages of the detector and their buffers.
@@ -234,6 +256,18 @@ struct Planes {
 }
 
 impl Planes {
+    fn reserve(&mut self, capacity: &DetectorCapacity) {
+        let (width, pixels) = (capacity.width as usize, capacity.max_pixels());
+        reserve_total(&mut self.grad_x, pixels);
+        reserve_total(&mut self.grad_y, pixels);
+        reserve_total(&mut self.scores, pixels);
+        self.tensor.reserve(width);
+        for row in &mut self.maxima_rows {
+            reserve_total(row, width.saturating_sub(2));
+        }
+        reserve_total(&mut self.candidates, capacity.max_candidates());
+    }
+
     /// Gradients, structure tensor, scores and non-maximum suppression. Leaves
     /// the local maxima that can pass `quality_level` in `candidates`, in
     /// row-major order. The image must be at least 3x3.
@@ -314,6 +348,130 @@ fn enforce_spacing(
     }
 }
 
+/// Grid dimensions and per-cell budget of a grid detection.
+#[derive(Clone, Copy)]
+pub(crate) struct GridLayout {
+    cols: u32,
+    rows: u32,
+    max_per_cell: u32,
+}
+
+impl GridLayout {
+    /// # Panics
+    /// Panics if `cols` or `rows` is zero.
+    pub(crate) fn new(cols: u32, rows: u32, max_per_cell: u32) -> Self {
+        assert!(cols > 0 && rows > 0, "grid must be non-empty");
+        Self {
+            cols,
+            rows,
+            max_per_cell,
+        }
+    }
+}
+
+/// Spacing and grid selection over score-sorted candidates, with the result
+/// buffer. Shared by the 8-bit and f32 detectors.
+#[derive(Default)]
+pub(crate) struct Selection {
+    pub(crate) results: Vec<(u32, u32, f32)>,
+    occupancy: OccupancyGrid,
+    cell_count: Vec<u32>,
+}
+
+impl Selection {
+    pub(crate) fn reserve(&mut self, capacity: &DetectorCapacity) {
+        let spaced = capacity.max_spaced();
+        reserve_total(&mut self.results, spaced);
+        self.occupancy
+            .reserve(capacity, capacity.existing_points + spaced);
+        reserve_total(&mut self.cell_count, capacity.grid_cells as usize);
+    }
+
+    pub(crate) fn clear(&mut self) -> &[(u32, u32, f32)] {
+        self.results.clear();
+        &self.results
+    }
+
+    /// Greedy minimum-distance selection, see [`enforce_spacing`].
+    pub(crate) fn spaced(
+        &mut self,
+        candidates: &[(u32, u32, f32)],
+        min_distance: u32,
+        width: u32,
+        height: u32,
+    ) -> &[(u32, u32, f32)] {
+        enforce_spacing(
+            candidates,
+            min_distance,
+            width,
+            height,
+            &mut self.occupancy,
+            &mut self.results,
+        );
+        &self.results
+    }
+
+    /// Per-cell selection for [`DetectorContext::detect_grid`].
+    pub(crate) fn grid(
+        &mut self,
+        candidates: &[(u32, u32, f32)],
+        width: u32,
+        height: u32,
+        grid: GridLayout,
+        min_distance: u32,
+        existing_points: &[(f32, f32)],
+    ) -> &[(u32, u32, f32)] {
+        self.results.clear();
+        if candidates.is_empty() {
+            return &self.results;
+        }
+        let GridLayout {
+            cols: grid_cols,
+            rows: grid_rows,
+            max_per_cell,
+        } = grid;
+
+        // Detection cell of a point, clamped to the grid.
+        let cell_of = |x: f32, y: f32| -> usize {
+            let col = ((x / width as f32) * grid_cols as f32) as u32;
+            let row = ((y / height as f32) * grid_rows as f32) as u32;
+            let col = col.min(grid_cols - 1);
+            let row = row.min(grid_rows - 1);
+            (row * grid_cols + col) as usize
+        };
+
+        // Per-cell occupancy (existing + accepted) against the feature budget.
+        self.cell_count.clear();
+        self.cell_count.resize((grid_cols * grid_rows) as usize, 0);
+        // Spatial hash for min_distance, independent of the detection grid.
+        self.occupancy.reset(width, height, min_distance);
+
+        for &(ex, ey) in existing_points {
+            self.cell_count[cell_of(ex, ey)] += 1;
+            self.occupancy.insert(ex, ey);
+        }
+
+        let min_distance = min_distance as f32;
+        for &(x, y, q) in candidates {
+            let (xf, yf) = (x as f32, y as f32);
+            let cell = cell_of(xf, yf);
+
+            if self.cell_count[cell] >= max_per_cell {
+                continue;
+            }
+            if self.occupancy.has_neighbor_within(xf, yf, min_distance) {
+                continue;
+            }
+
+            self.occupancy.insert(xf, yf);
+            self.cell_count[cell] += 1;
+            self.results.push((x, y, q));
+        }
+
+        &self.results
+    }
+}
+
 /// Uniform spatial hash used to enforce `min_distance` between kept points.
 ///
 /// Cells are `min_distance` wide, so any point closer than `min_distance` to a
@@ -333,6 +491,19 @@ struct OccupancyGrid {
 const NO_POINT: u32 = u32::MAX;
 
 impl OccupancyGrid {
+    /// Allocates the cells for the smallest spacing in `capacity` and room
+    /// for `points` points.
+    fn reserve(&mut self, capacity: &DetectorCapacity, points: usize) {
+        let cell_size = capacity.min_distance.max(1);
+        let cells = |length: u32| length.div_ceil(cell_size).max(1) as usize;
+        reserve_total(
+            &mut self.heads,
+            cells(capacity.width) * cells(capacity.height),
+        );
+        reserve_total(&mut self.next, points);
+        reserve_total(&mut self.points, points);
+    }
+
     fn reset(&mut self, width: u32, height: u32, min_distance: u32) {
         self.cell_size = min_distance.max(1);
         self.cols = width.div_ceil(self.cell_size).max(1);
@@ -414,6 +585,12 @@ impl TensorRow {
         }
     }
 
+    fn reserve(&mut self, width: usize) {
+        for plane in [&mut self.xx, &mut self.yy, &mut self.xy] {
+            reserve_total(plane, width);
+        }
+    }
+
     fn planes(&self) -> [&[i32]; 3] {
         [&self.xx, &self.yy, &self.xy]
     }
@@ -441,6 +618,19 @@ struct TensorRows {
     products: TensorRow,
     ring: [TensorRow; 3],
     window: TensorRow,
+}
+
+impl TensorRows {
+    fn reserve(&mut self, width: usize) {
+        let Self {
+            products,
+            ring,
+            window,
+        } = self;
+        for row in [products, window].into_iter().chain(ring) {
+            row.reserve(width);
+        }
+    }
 }
 
 /// Raw Scharr products of one row. For u8 images, |Scharr| <= 4080: products
@@ -926,6 +1116,49 @@ mod tests {
         let candidates = [(1, 1, 3.0), (1, 2, 2.0), (20, 20, 1.0)];
         assert_eq!(spaced(&candidates, 0), candidates);
         assert_eq!(spaced(&candidates, u32::MAX), candidates[..1]);
+    }
+
+    #[test]
+    fn reservation_covers_plateaus_and_densest_spacing() {
+        // On a plateau every interior pixel is a local maximum.
+        let capacity = DetectorCapacity {
+            width: 9,
+            height: 7,
+            ..Default::default()
+        };
+        let mut planes = Planes::default();
+        planes.reserve(&capacity);
+        let buffer = planes.candidates.as_ptr();
+        let scores = vec![1.0; 9 * 7];
+        local_maxima(
+            &scores,
+            9,
+            7,
+            0.0,
+            &mut planes.maxima_rows,
+            &mut planes.candidates,
+        );
+        assert_eq!(planes.candidates.len(), capacity.max_candidates());
+        assert_eq!(planes.candidates.as_ptr(), buffer);
+
+        // Greedy spacing over every interior pixel packs points most densely.
+        for min_distance in [0, 1, 2, 3, 5, 8, 13, 100] {
+            let capacity = DetectorCapacity {
+                width: 61,
+                height: 47,
+                min_distance,
+                ..Default::default()
+            };
+            let candidates: Vec<_> = (1..46)
+                .flat_map(|y| (1..60).map(move |x| (x, y, 1.0)))
+                .collect();
+            let mut selection = Selection::default();
+            selection.reserve(&capacity);
+            let buffer = selection.results.as_ptr();
+            let kept = selection.spaced(&candidates, min_distance, 61, 47).len();
+            assert!(kept <= capacity.max_spaced(), "{min_distance}: {kept}");
+            assert_eq!(selection.results.as_ptr(), buffer);
+        }
     }
 
     #[test]
