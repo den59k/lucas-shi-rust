@@ -1,0 +1,18 @@
+# Standalone crate: dumps the inputs and the crate's own results for the
+# OpenCV comparison, and times the native crate.
+[workspace]
+
+[package]
+name = "opencv-compare-native"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+optical-flow-lk = { path = "../../.." }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
