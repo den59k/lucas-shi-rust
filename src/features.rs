@@ -285,6 +285,7 @@ fn min_eigenvalue_scores(
     // Horizontal sums of the rows above, at and below y, stored at row % 3.
     let mut ring = [TensorRow::new(w), TensorRow::new(w), TensorRow::new(w)];
     let mut window = TensorRow::new(w);
+    let mut scores = vec![0.0f32; w];
 
     horizontal_tensor_row(&gx[row(0)], &gy[row(0)], &mut products, &mut ring[0]);
     for y in 0..h {
@@ -295,46 +296,48 @@ fn min_eigenvalue_scores(
         let above = (y > 0).then(|| &ring[(y + 2) % 3]);
         let below = (y + 1 < h).then(|| &ring[(y + 1) % 3]);
         window.sum_rows(above, &ring[y % 3], below);
-        score_row(&window, y as u32, width, height, &mut features);
+        let y = y as u32;
+        score_row(&window, y, height, &mut scores);
+        features.extend((0..width).zip(&scores).map(|(x, &score)| (x, y, score)));
     }
 
     features
 }
 
-/// Appends the normalized minimum eigenvalues of one row of 3x3 window sums.
-fn score_row(
-    window: &TensorRow,
-    y: u32,
-    width: u32,
-    height: u32,
-    features: &mut Vec<(u32, u32, f32)>,
-) {
+/// Normalized minimum eigenvalues of one row of 3x3 window sums.
+fn score_row(window: &TensorRow, y: u32, height: u32, scores: &mut [f32]) {
+    let width = scores.len();
     let rows = 1 + u32::from(y > 0) + u32::from(y + 1 < height);
+    // Eigenvalues scale linearly with a common tensor scale. Divide once by
+    // Scharr gain squared and the actual sample count, including edges.
+    let normalization = |cols: u32| (32 * 32 * cols * rows) as f32;
+    let interior = normalization(3);
     let sums = window.xx.iter().zip(&window.yy).zip(&window.xy);
-    for (x, ((&a, &b), &c)) in (0..width).zip(sums) {
-        let cols = 1 + u32::from(x > 0) + u32::from(x + 1 < width);
-        // Eigenvalues scale linearly with a common tensor scale. Divide once
-        // by Scharr gain squared and the actual sample count, including edges.
-        let normalization = (32 * 32 * cols * rows) as f64;
-        let min_eigen = (tensor_min_eigenvalue(a, b, c) / normalization) as f32;
-        features.push((x, y, min_eigen));
+    for (score, ((&a, &b), &c)) in scores.iter_mut().zip(sums) {
+        *score = scaled_min_eigenvalue(a, b, c, interior);
+    }
+    // Boundary columns average fewer samples; a single column has none beside it.
+    let edge = normalization(if width == 1 { 1 } else { 2 });
+    for x in [0, width - 1] {
+        scores[x] = scaled_min_eigenvalue(window.xx[x], window.yy[x], window.xy[x], edge);
     }
 }
 
-/// Small eigenvalue of [[a, c], [c, b]], for summed gradient products.
-fn tensor_min_eigenvalue(a: i32, b: i32, c: i32) -> f64 {
-    // i32 tensor sums can have a discriminant larger than i32. Compute the
-    // determinant exactly in i64 before conversion to f64; det/lambda_max
-    // avoids cancellation in trace - sqrt(discriminant) for nearly rank-one
-    // tensors. Valid u8 tensors have |entry| <= 149_817_600, so i64 is ample.
+/// Small eigenvalue of [[a, c], [c, b]] for summed gradient products, divided
+/// by `normalization`.
+fn scaled_min_eigenvalue(a: i32, b: i32, c: i32, normalization: f32) -> f32 {
+    // Compute the determinant exactly in i64: i32 tensor sums can have a
+    // discriminant larger than i32, and ab - c^2 cancels for nearly rank-one
+    // tensors. Then det / lambda_max leaves no cancellation, so f32 suffices
+    // for the rest: lambda_max only adds non-negative terms. Valid u8 tensors
+    // have |entry| <= 149_817_600, so i64 is ample and a + b fits in i32.
     let determinant = a as i64 * b as i64 - c as i64 * c as i64;
-    if determinant <= 0 {
-        return 0.0;
-    }
-    let (a, b, c) = (a as f64, b as f64, c as f64);
-    let discriminant_sqrt = ((a - b).powi(2) + 4.0 * c.powi(2)).sqrt();
-    let largest = (a + b + discriminant_sqrt) * 0.5;
-    determinant as f64 / largest
+    let (trace, difference, c) = ((a + b) as f32, (a - b) as f32, c as f32);
+    let largest = (trace + (difference * difference + 4.0 * c * c).sqrt()) * 0.5;
+    // Select instead of an early return so the row loop vectorizes; the
+    // discarded lane of a zero tensor computes 0 / 0.
+    let score = determinant as f32 / (largest * normalization);
+    if determinant > 0 { score } else { 0.0 }
 }
 
 fn non_maximum_suppression(features: &mut Vec<(u32, u32, f32)>, width: u32, height: u32) {
@@ -429,10 +432,10 @@ mod tests {
             (0, 0, 1, 0.0),
         ];
         for tensor in tensors {
-            let score = tensor_min_eigenvalue(tensor.0, tensor.1, tensor.2);
+            let score = scaled_min_eigenvalue(tensor.0, tensor.1, tensor.2, 1.0);
             assert!(score.is_finite());
             assert!(
-                (score - tensor.3).abs() < 1e-5,
+                (score - tensor.3).abs() <= 1e-6 * tensor.3.max(1.0),
                 "wrong score for {tensor:?}"
             );
         }
@@ -445,12 +448,14 @@ mod tests {
         let (width, height) = a.dimensions();
         let mut features = Vec::new();
         let mut window = TensorRow::new(width as usize);
+        let mut scores = vec![0.0; width as usize];
         for y in 0..height {
             let row = (y * width) as usize..((y + 1) * width) as usize;
             window.xx.copy_from_slice(&a.as_raw()[row.clone()]);
             window.yy.copy_from_slice(&b.as_raw()[row.clone()]);
             window.xy.copy_from_slice(&c.as_raw()[row]);
-            score_row(&window, y, width, height, &mut features);
+            score_row(&window, y, height, &mut scores);
+            features.extend((0..width).zip(&scores).map(|(x, &score)| (x, y, score)));
         }
         features
     }
@@ -528,17 +533,50 @@ mod tests {
         // Outer products of (4080, 4079) and (4079, 4078) have determinant 1.
         let (a, b, c) = (33_284_641, 33_268_325, 33_276_482);
         assert_eq!(a as i64 * b as i64 - c as i64 * c as i64, 1);
-        let score = tensor_min_eigenvalue(a, b, c);
+        let score = scaled_min_eigenvalue(a, b, c, 1.0) as f64;
         let expected = 1.0 / (a as f64 + b as f64);
-        assert!((score - expected).abs() <= expected * 1e-14);
+        assert!((score - expected).abs() <= expected * 1e-6);
     }
 
     #[test]
     fn maximum_product_sum_is_finite_and_rank_one_stays_zero() {
         let max = 9 * 4080 * 4080;
-        assert_eq!(tensor_min_eigenvalue(max, max, 0), max as f64);
-        assert_eq!(tensor_min_eigenvalue(max, max, max), 0.0);
-        assert_eq!(tensor_min_eigenvalue(max, max, -max), 0.0);
+        let score = scaled_min_eigenvalue(max, max, 0, 1.0);
+        assert!((score - max as f32).abs() <= max as f32 * 1e-6);
+        assert_eq!(scaled_min_eigenvalue(max, max, max, 1.0), 0.0);
+        assert_eq!(scaled_min_eigenvalue(max, max, -max, 1.0), 0.0);
+    }
+
+    #[test]
+    fn f32_score_matches_f64_eigenvalue_of_window_tensors() {
+        // Sums of nine gradient outer products, including nearly collinear ones.
+        let mut state = 0x9e37_79b9u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % 8161) as i32 - 4080
+        };
+        for trial in 0..20_000 {
+            let (dx, dy) = (next(), next());
+            let (mut a, mut b, mut c) = (0, 0, 0);
+            for _ in 0..9 {
+                let jitter = if trial % 2 == 0 { 4080 } else { 3 };
+                let scale = next().signum();
+                let ix = (scale * dx + next() % jitter).clamp(-4080, 4080);
+                let iy = (scale * dy + next() % jitter).clamp(-4080, 4080);
+                (a, b, c) = (a + ix * ix, b + iy * iy, c + ix * iy);
+            }
+            let determinant = a as i64 * b as i64 - c as i64 * c as i64;
+            let (af, bf, cf) = (a as f64, b as f64, c as f64);
+            let largest = (af + bf + ((af - bf).powi(2) + 4.0 * cf * cf).sqrt()) / 2.0;
+            let expected = (determinant.max(0) as f64 / largest) as f32;
+            let score = scaled_min_eigenvalue(a, b, c, 1.0);
+            assert!(
+                (score - expected).abs() <= expected * 1e-6,
+                "{a} {b} {c}: {score} vs {expected}"
+            );
+        }
     }
 
     #[test]
