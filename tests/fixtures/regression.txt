@@ -1,0 +1,771 @@
+detect example_720x405 q=0 d=0 n=14720 d9b605d6a51197ed
+detect example_720x405 q=0 d=1 n=14720 d9b605d6a51197ed
+detect example_720x405 q=0 d=6 n=4160 470427f12d48fae2
+detect example_720x405 q=0 d=8 n=2590 70bfb2829be48d3d
+detect example_720x405 q=0 d=100 n=25 40c41efe0e9c8c16
+detect example_720x405 q=0.01 d=0 n=456 6f89635cbd484497
+detect example_720x405 q=0.01 d=1 n=456 6f89635cbd484497
+detect example_720x405 q=0.01 d=6 n=315 285649520c5aa1ec
+detect example_720x405 q=0.01 d=8 n=265 47c5582297022a77
+detect example_720x405 q=0.01 d=100 n=20 2f641b996613237a
+detect example_720x405 q=0.05 d=0 n=71 89d5008cdd5eace3
+detect example_720x405 q=0.05 d=1 n=71 89d5008cdd5eace3
+detect example_720x405 q=0.05 d=6 n=64 ec3c4987e32cd1e2
+detect example_720x405 q=0.05 d=8 n=60 7b746c8dbd81a067
+detect example_720x405 q=0.05 d=100 n=12 b96fbfa7f295ca9d
+detect example_720x405 q=0.3 d=0 n=6 01f6ff9dba06247d
+detect example_720x405 q=0.3 d=1 n=6 01f6ff9dba06247d
+detect example_720x405 q=0.3 d=6 n=6 01f6ff9dba06247d
+detect example_720x405 q=0.3 d=8 n=6 01f6ff9dba06247d
+detect example_720x405 q=0.3 d=100 n=6 01f6ff9dba06247d
+detect example_720x405 q=1 d=0 n=1 f1fa1ca9e770a21e
+detect example_720x405 q=1 d=1 n=1 f1fa1ca9e770a21e
+detect example_720x405 q=1 d=6 n=1 f1fa1ca9e770a21e
+detect example_720x405 q=1 d=8 n=1 f1fa1ca9e770a21e
+detect example_720x405 q=1 d=100 n=1 f1fa1ca9e770a21e
+grid example_720x405 1x1 b=10 e=0 n=10 88c2b2583760a514
+grid example_720x405 1x1 b=10 e=6 n=4 de3c82bbee31fd3b
+grid example_720x405 6x4 b=5 e=0 n=97 c467997648113057
+grid example_720x405 6x4 b=5 e=6 n=91 f576434b1e0b5f55
+grid example_720x405 3x2 b=1 e=0 n=6 86a771bd694392f5
+grid example_720x405 3x2 b=1 e=6 n=5 69cd8764ff3e83a0
+detect texture_320x240 q=0 d=0 n=4238 2577b0bd84ddae8c
+detect texture_320x240 q=0 d=1 n=4238 2577b0bd84ddae8c
+detect texture_320x240 q=0 d=6 n=1138 f3f46e2cc22644e9
+detect texture_320x240 q=0 d=8 n=680 0eb0f2f7825fff1e
+detect texture_320x240 q=0 d=100 n=8 7ed8e95f093011ab
+detect texture_320x240 q=0.01 d=0 n=4238 2577b0bd84ddae8c
+detect texture_320x240 q=0.01 d=1 n=4238 2577b0bd84ddae8c
+detect texture_320x240 q=0.01 d=6 n=1138 f3f46e2cc22644e9
+detect texture_320x240 q=0.01 d=8 n=680 0eb0f2f7825fff1e
+detect texture_320x240 q=0.01 d=100 n=8 7ed8e95f093011ab
+detect texture_320x240 q=0.05 d=0 n=4189 b93bbf384e00cb65
+detect texture_320x240 q=0.05 d=1 n=4189 b93bbf384e00cb65
+detect texture_320x240 q=0.05 d=6 n=1135 30711a6263205fd1
+detect texture_320x240 q=0.05 d=8 n=678 f380bcd196c034b4
+detect texture_320x240 q=0.05 d=100 n=8 7ed8e95f093011ab
+detect texture_320x240 q=0.3 d=0 n=1321 4f102f4218ea1ba6
+detect texture_320x240 q=0.3 d=1 n=1321 4f102f4218ea1ba6
+detect texture_320x240 q=0.3 d=6 n=627 584e5d4cdd2eac21
+detect texture_320x240 q=0.3 d=8 n=458 bbc9e7ad65c5388b
+detect texture_320x240 q=0.3 d=100 n=8 7ed8e95f093011ab
+detect texture_320x240 q=1 d=0 n=1 24c5daa70e236688
+detect texture_320x240 q=1 d=1 n=1 24c5daa70e236688
+detect texture_320x240 q=1 d=6 n=1 24c5daa70e236688
+detect texture_320x240 q=1 d=8 n=1 24c5daa70e236688
+detect texture_320x240 q=1 d=100 n=1 24c5daa70e236688
+grid texture_320x240 1x1 b=10 e=0 n=10 83dfec477fb9af4c
+grid texture_320x240 1x1 b=10 e=6 n=4 6d56376996802720
+grid texture_320x240 6x4 b=5 e=0 n=120 5bdca59252e919eb
+grid texture_320x240 6x4 b=5 e=6 n=114 bd21bb91fed386c1
+grid texture_320x240 3x2 b=1 e=0 n=6 924b24456ee2a733
+grid texture_320x240 3x2 b=1 e=6 n=4 e7e126f0ce368ac7
+detect texture_640x480 q=0 d=0 n=17006 2c785dceb91a5fa0
+detect texture_640x480 q=0 d=1 n=17006 2c785dceb91a5fa0
+detect texture_640x480 q=0 d=6 n=4547 8aed8ee1d8c778fc
+detect texture_640x480 q=0 d=8 n=2755 cc68e5b37ce5e44a
+detect texture_640x480 q=0 d=100 n=27 8504a1b2c14f4995
+detect texture_640x480 q=0.01 d=0 n=17006 2c785dceb91a5fa0
+detect texture_640x480 q=0.01 d=1 n=17006 2c785dceb91a5fa0
+detect texture_640x480 q=0.01 d=6 n=4547 8aed8ee1d8c778fc
+detect texture_640x480 q=0.01 d=8 n=2755 cc68e5b37ce5e44a
+detect texture_640x480 q=0.01 d=100 n=27 8504a1b2c14f4995
+detect texture_640x480 q=0.05 d=0 n=16455 3d7b484c939a012a
+detect texture_640x480 q=0.05 d=1 n=16455 3d7b484c939a012a
+detect texture_640x480 q=0.05 d=6 n=4485 87351673e9723a46
+detect texture_640x480 q=0.05 d=8 n=2727 3e88e19b7c551339
+detect texture_640x480 q=0.05 d=100 n=27 8504a1b2c14f4995
+detect texture_640x480 q=0.3 d=0 n=2327 c88203eb9df58141
+detect texture_640x480 q=0.3 d=1 n=2327 c88203eb9df58141
+detect texture_640x480 q=0.3 d=6 n=1479 3dd1c36667d44661
+detect texture_640x480 q=0.3 d=8 n=1234 e3df19ac6ad448aa
+detect texture_640x480 q=0.3 d=100 n=27 8504a1b2c14f4995
+detect texture_640x480 q=1 d=0 n=1 8ac8e8cd4d034657
+detect texture_640x480 q=1 d=1 n=1 8ac8e8cd4d034657
+detect texture_640x480 q=1 d=6 n=1 8ac8e8cd4d034657
+detect texture_640x480 q=1 d=8 n=1 8ac8e8cd4d034657
+detect texture_640x480 q=1 d=100 n=1 8ac8e8cd4d034657
+grid texture_640x480 1x1 b=10 e=0 n=10 71d7adcb56be32be
+grid texture_640x480 1x1 b=10 e=6 n=4 65afcdc22e77b53d
+grid texture_640x480 6x4 b=5 e=0 n=120 28cc9994d90ffc3c
+grid texture_640x480 6x4 b=5 e=6 n=114 f44e5eaac9b9c135
+grid texture_640x480 3x2 b=1 e=0 n=6 776b556f8de5e4d0
+grid texture_640x480 3x2 b=1 e=6 n=5 ea0f708d294c7fe2
+detect low_contrast_320x240 q=0 d=0 n=3795 36d68f200b340cbb
+detect low_contrast_320x240 q=0 d=1 n=3795 36d68f200b340cbb
+detect low_contrast_320x240 q=0 d=6 n=1098 3193bae179b8875d
+detect low_contrast_320x240 q=0 d=8 n=680 3713f6a22e471c07
+detect low_contrast_320x240 q=0 d=100 n=9 b56dd9b055394efe
+detect low_contrast_320x240 q=0.01 d=0 n=3794 bfb3c5978947eea5
+detect low_contrast_320x240 q=0.01 d=1 n=3794 bfb3c5978947eea5
+detect low_contrast_320x240 q=0.01 d=6 n=1098 3193bae179b8875d
+detect low_contrast_320x240 q=0.01 d=8 n=679 2172359a27935879
+detect low_contrast_320x240 q=0.01 d=100 n=9 b56dd9b055394efe
+detect low_contrast_320x240 q=0.05 d=0 n=3784 f05822c6ddaa913f
+detect low_contrast_320x240 q=0.05 d=1 n=3784 f05822c6ddaa913f
+detect low_contrast_320x240 q=0.05 d=6 n=1096 38eeec8e2fcea11f
+detect low_contrast_320x240 q=0.05 d=8 n=679 2172359a27935879
+detect low_contrast_320x240 q=0.05 d=100 n=9 b56dd9b055394efe
+detect low_contrast_320x240 q=0.3 d=0 n=2829 8486773014b66890
+detect low_contrast_320x240 q=0.3 d=1 n=2829 8486773014b66890
+detect low_contrast_320x240 q=0.3 d=6 n=983 aa1a7100bdc1a813
+detect low_contrast_320x240 q=0.3 d=8 n=638 6feea154aee3af5e
+detect low_contrast_320x240 q=0.3 d=100 n=9 b56dd9b055394efe
+detect low_contrast_320x240 q=1 d=0 n=5 8e3d25d1ba853f61
+detect low_contrast_320x240 q=1 d=1 n=5 8e3d25d1ba853f61
+detect low_contrast_320x240 q=1 d=6 n=5 8e3d25d1ba853f61
+detect low_contrast_320x240 q=1 d=8 n=5 8e3d25d1ba853f61
+detect low_contrast_320x240 q=1 d=100 n=4 a44b3adf71dc60f6
+grid low_contrast_320x240 1x1 b=10 e=0 n=10 e3360023ecdd85ec
+grid low_contrast_320x240 1x1 b=10 e=6 n=4 b70112479cb76a9d
+grid low_contrast_320x240 6x4 b=5 e=0 n=120 15a0ef8b697d4085
+grid low_contrast_320x240 6x4 b=5 e=6 n=114 59bb14296512dd06
+grid low_contrast_320x240 3x2 b=1 e=0 n=6 323d5373a84fb98c
+grid low_contrast_320x240 3x2 b=1 e=6 n=4 c50f6a0eb141c3fc
+detect flat_640x480 q=0 d=0 n=0 cbf29ce484222325
+detect flat_640x480 q=0 d=1 n=0 cbf29ce484222325
+detect flat_640x480 q=0 d=6 n=0 cbf29ce484222325
+detect flat_640x480 q=0 d=8 n=0 cbf29ce484222325
+detect flat_640x480 q=0 d=100 n=0 cbf29ce484222325
+detect flat_640x480 q=0.01 d=0 n=0 cbf29ce484222325
+detect flat_640x480 q=0.01 d=1 n=0 cbf29ce484222325
+detect flat_640x480 q=0.01 d=6 n=0 cbf29ce484222325
+detect flat_640x480 q=0.01 d=8 n=0 cbf29ce484222325
+detect flat_640x480 q=0.01 d=100 n=0 cbf29ce484222325
+detect flat_640x480 q=0.05 d=0 n=0 cbf29ce484222325
+detect flat_640x480 q=0.05 d=1 n=0 cbf29ce484222325
+detect flat_640x480 q=0.05 d=6 n=0 cbf29ce484222325
+detect flat_640x480 q=0.05 d=8 n=0 cbf29ce484222325
+detect flat_640x480 q=0.05 d=100 n=0 cbf29ce484222325
+detect flat_640x480 q=0.3 d=0 n=0 cbf29ce484222325
+detect flat_640x480 q=0.3 d=1 n=0 cbf29ce484222325
+detect flat_640x480 q=0.3 d=6 n=0 cbf29ce484222325
+detect flat_640x480 q=0.3 d=8 n=0 cbf29ce484222325
+detect flat_640x480 q=0.3 d=100 n=0 cbf29ce484222325
+detect flat_640x480 q=1 d=0 n=0 cbf29ce484222325
+detect flat_640x480 q=1 d=1 n=0 cbf29ce484222325
+detect flat_640x480 q=1 d=6 n=0 cbf29ce484222325
+detect flat_640x480 q=1 d=8 n=0 cbf29ce484222325
+detect flat_640x480 q=1 d=100 n=0 cbf29ce484222325
+grid flat_640x480 1x1 b=10 e=0 n=0 cbf29ce484222325
+grid flat_640x480 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid flat_640x480 6x4 b=5 e=0 n=0 cbf29ce484222325
+grid flat_640x480 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid flat_640x480 3x2 b=1 e=0 n=0 cbf29ce484222325
+grid flat_640x480 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect example2 q=0 d=0 n=14750 a9986fa8da5aeee2
+detect example2 q=0 d=1 n=14750 a9986fa8da5aeee2
+detect example2 q=0 d=6 n=4182 2eddd28bb5993f5d
+detect example2 q=0 d=8 n=2582 65f19a97b3072f2c
+detect example2 q=0 d=100 n=26 bbaf8b930db2b68d
+detect example2 q=0.01 d=0 n=437 7b58cfa8667b76b7
+detect example2 q=0.01 d=1 n=437 7b58cfa8667b76b7
+detect example2 q=0.01 d=6 n=300 46d91cd76e190bcc
+detect example2 q=0.01 d=8 n=256 424fefa2c96a08b8
+detect example2 q=0.01 d=100 n=18 b2427c48ea496571
+detect example2 q=0.05 d=0 n=45 ef81f6c6e2886d99
+detect example2 q=0.05 d=1 n=45 ef81f6c6e2886d99
+detect example2 q=0.05 d=6 n=42 2f03e6276825745d
+detect example2 q=0.05 d=8 n=40 d7a25c00f8b320a4
+detect example2 q=0.05 d=100 n=13 69741c7331eecc3d
+detect example2 q=0.3 d=0 n=6 314175b16f9a0af0
+detect example2 q=0.3 d=1 n=6 314175b16f9a0af0
+detect example2 q=0.3 d=6 n=6 314175b16f9a0af0
+detect example2 q=0.3 d=8 n=6 314175b16f9a0af0
+detect example2 q=0.3 d=100 n=6 314175b16f9a0af0
+detect example2 q=1 d=0 n=1 26261231ea81346d
+detect example2 q=1 d=1 n=1 26261231ea81346d
+detect example2 q=1 d=6 n=1 26261231ea81346d
+detect example2 q=1 d=8 n=1 26261231ea81346d
+detect example2 q=1 d=100 n=1 26261231ea81346d
+grid example2 1x1 b=10 e=0 n=10 0f358f52c12bc710
+grid example2 1x1 b=10 e=6 n=4 b3036e5974028c4d
+grid example2 6x4 b=5 e=0 n=97 df8b1399d313164b
+grid example2 6x4 b=5 e=6 n=92 96791163ec400bab
+grid example2 3x2 b=1 e=0 n=6 5fdbe9cb1c0d3101
+grid example2 3x2 b=1 e=6 n=5 5cb30c55426120a0
+detect noise_3x3 q=0 d=0 n=0 cbf29ce484222325
+detect noise_3x3 q=0 d=1 n=0 cbf29ce484222325
+detect noise_3x3 q=0 d=6 n=0 cbf29ce484222325
+detect noise_3x3 q=0 d=8 n=0 cbf29ce484222325
+detect noise_3x3 q=0 d=100 n=0 cbf29ce484222325
+detect noise_3x3 q=0.01 d=0 n=0 cbf29ce484222325
+detect noise_3x3 q=0.01 d=1 n=0 cbf29ce484222325
+detect noise_3x3 q=0.01 d=6 n=0 cbf29ce484222325
+detect noise_3x3 q=0.01 d=8 n=0 cbf29ce484222325
+detect noise_3x3 q=0.01 d=100 n=0 cbf29ce484222325
+detect noise_3x3 q=0.05 d=0 n=0 cbf29ce484222325
+detect noise_3x3 q=0.05 d=1 n=0 cbf29ce484222325
+detect noise_3x3 q=0.05 d=6 n=0 cbf29ce484222325
+detect noise_3x3 q=0.05 d=8 n=0 cbf29ce484222325
+detect noise_3x3 q=0.05 d=100 n=0 cbf29ce484222325
+detect noise_3x3 q=0.3 d=0 n=0 cbf29ce484222325
+detect noise_3x3 q=0.3 d=1 n=0 cbf29ce484222325
+detect noise_3x3 q=0.3 d=6 n=0 cbf29ce484222325
+detect noise_3x3 q=0.3 d=8 n=0 cbf29ce484222325
+detect noise_3x3 q=0.3 d=100 n=0 cbf29ce484222325
+detect noise_3x3 q=1 d=0 n=0 cbf29ce484222325
+detect noise_3x3 q=1 d=1 n=0 cbf29ce484222325
+detect noise_3x3 q=1 d=6 n=0 cbf29ce484222325
+detect noise_3x3 q=1 d=8 n=0 cbf29ce484222325
+detect noise_3x3 q=1 d=100 n=0 cbf29ce484222325
+grid noise_3x3 1x1 b=10 e=0 n=0 cbf29ce484222325
+grid noise_3x3 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid noise_3x3 6x4 b=5 e=0 n=0 cbf29ce484222325
+grid noise_3x3 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid noise_3x3 3x2 b=1 e=0 n=0 cbf29ce484222325
+grid noise_3x3 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_4x5 q=0 d=0 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0 d=1 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0 d=6 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0 d=8 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0 d=100 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.01 d=0 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.01 d=1 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.01 d=6 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.01 d=8 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.01 d=100 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.05 d=0 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.05 d=1 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.05 d=6 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.05 d=8 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.05 d=100 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.3 d=0 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.3 d=1 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.3 d=6 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.3 d=8 n=1 73d2a0ca0e600511
+detect noise_4x5 q=0.3 d=100 n=1 73d2a0ca0e600511
+detect noise_4x5 q=1 d=0 n=1 73d2a0ca0e600511
+detect noise_4x5 q=1 d=1 n=1 73d2a0ca0e600511
+detect noise_4x5 q=1 d=6 n=1 73d2a0ca0e600511
+detect noise_4x5 q=1 d=8 n=1 73d2a0ca0e600511
+detect noise_4x5 q=1 d=100 n=1 73d2a0ca0e600511
+grid noise_4x5 1x1 b=10 e=0 n=1 73d2a0ca0e600511
+grid noise_4x5 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid noise_4x5 6x4 b=5 e=0 n=1 73d2a0ca0e600511
+grid noise_4x5 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid noise_4x5 3x2 b=1 e=0 n=1 73d2a0ca0e600511
+grid noise_4x5 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_5x4 q=0 d=0 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0 d=1 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0 d=6 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0 d=8 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0 d=100 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.01 d=0 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.01 d=1 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.01 d=6 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.01 d=8 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.01 d=100 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.05 d=0 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.05 d=1 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.05 d=6 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.05 d=8 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.05 d=100 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.3 d=0 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.3 d=1 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.3 d=6 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.3 d=8 n=1 d0d82d2271cc8778
+detect noise_5x4 q=0.3 d=100 n=1 d0d82d2271cc8778
+detect noise_5x4 q=1 d=0 n=1 d0d82d2271cc8778
+detect noise_5x4 q=1 d=1 n=1 d0d82d2271cc8778
+detect noise_5x4 q=1 d=6 n=1 d0d82d2271cc8778
+detect noise_5x4 q=1 d=8 n=1 d0d82d2271cc8778
+detect noise_5x4 q=1 d=100 n=1 d0d82d2271cc8778
+grid noise_5x4 1x1 b=10 e=0 n=1 d0d82d2271cc8778
+grid noise_5x4 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid noise_5x4 6x4 b=5 e=0 n=1 d0d82d2271cc8778
+grid noise_5x4 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid noise_5x4 3x2 b=1 e=0 n=1 d0d82d2271cc8778
+grid noise_5x4 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_7x3 q=0 d=0 n=0 cbf29ce484222325
+detect noise_7x3 q=0 d=1 n=0 cbf29ce484222325
+detect noise_7x3 q=0 d=6 n=0 cbf29ce484222325
+detect noise_7x3 q=0 d=8 n=0 cbf29ce484222325
+detect noise_7x3 q=0 d=100 n=0 cbf29ce484222325
+detect noise_7x3 q=0.01 d=0 n=0 cbf29ce484222325
+detect noise_7x3 q=0.01 d=1 n=0 cbf29ce484222325
+detect noise_7x3 q=0.01 d=6 n=0 cbf29ce484222325
+detect noise_7x3 q=0.01 d=8 n=0 cbf29ce484222325
+detect noise_7x3 q=0.01 d=100 n=0 cbf29ce484222325
+detect noise_7x3 q=0.05 d=0 n=0 cbf29ce484222325
+detect noise_7x3 q=0.05 d=1 n=0 cbf29ce484222325
+detect noise_7x3 q=0.05 d=6 n=0 cbf29ce484222325
+detect noise_7x3 q=0.05 d=8 n=0 cbf29ce484222325
+detect noise_7x3 q=0.05 d=100 n=0 cbf29ce484222325
+detect noise_7x3 q=0.3 d=0 n=0 cbf29ce484222325
+detect noise_7x3 q=0.3 d=1 n=0 cbf29ce484222325
+detect noise_7x3 q=0.3 d=6 n=0 cbf29ce484222325
+detect noise_7x3 q=0.3 d=8 n=0 cbf29ce484222325
+detect noise_7x3 q=0.3 d=100 n=0 cbf29ce484222325
+detect noise_7x3 q=1 d=0 n=0 cbf29ce484222325
+detect noise_7x3 q=1 d=1 n=0 cbf29ce484222325
+detect noise_7x3 q=1 d=6 n=0 cbf29ce484222325
+detect noise_7x3 q=1 d=8 n=0 cbf29ce484222325
+detect noise_7x3 q=1 d=100 n=0 cbf29ce484222325
+grid noise_7x3 1x1 b=10 e=0 n=0 cbf29ce484222325
+grid noise_7x3 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid noise_7x3 6x4 b=5 e=0 n=0 cbf29ce484222325
+grid noise_7x3 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid noise_7x3 3x2 b=1 e=0 n=0 cbf29ce484222325
+grid noise_7x3 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_3x9 q=0 d=0 n=0 cbf29ce484222325
+detect noise_3x9 q=0 d=1 n=0 cbf29ce484222325
+detect noise_3x9 q=0 d=6 n=0 cbf29ce484222325
+detect noise_3x9 q=0 d=8 n=0 cbf29ce484222325
+detect noise_3x9 q=0 d=100 n=0 cbf29ce484222325
+detect noise_3x9 q=0.01 d=0 n=0 cbf29ce484222325
+detect noise_3x9 q=0.01 d=1 n=0 cbf29ce484222325
+detect noise_3x9 q=0.01 d=6 n=0 cbf29ce484222325
+detect noise_3x9 q=0.01 d=8 n=0 cbf29ce484222325
+detect noise_3x9 q=0.01 d=100 n=0 cbf29ce484222325
+detect noise_3x9 q=0.05 d=0 n=0 cbf29ce484222325
+detect noise_3x9 q=0.05 d=1 n=0 cbf29ce484222325
+detect noise_3x9 q=0.05 d=6 n=0 cbf29ce484222325
+detect noise_3x9 q=0.05 d=8 n=0 cbf29ce484222325
+detect noise_3x9 q=0.05 d=100 n=0 cbf29ce484222325
+detect noise_3x9 q=0.3 d=0 n=0 cbf29ce484222325
+detect noise_3x9 q=0.3 d=1 n=0 cbf29ce484222325
+detect noise_3x9 q=0.3 d=6 n=0 cbf29ce484222325
+detect noise_3x9 q=0.3 d=8 n=0 cbf29ce484222325
+detect noise_3x9 q=0.3 d=100 n=0 cbf29ce484222325
+detect noise_3x9 q=1 d=0 n=0 cbf29ce484222325
+detect noise_3x9 q=1 d=1 n=0 cbf29ce484222325
+detect noise_3x9 q=1 d=6 n=0 cbf29ce484222325
+detect noise_3x9 q=1 d=8 n=0 cbf29ce484222325
+detect noise_3x9 q=1 d=100 n=0 cbf29ce484222325
+grid noise_3x9 1x1 b=10 e=0 n=0 cbf29ce484222325
+grid noise_3x9 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid noise_3x9 6x4 b=5 e=0 n=0 cbf29ce484222325
+grid noise_3x9 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid noise_3x9 3x2 b=1 e=0 n=0 cbf29ce484222325
+grid noise_3x9 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_17x19 q=0 d=0 n=19 5c8a8635614b1d20
+detect noise_17x19 q=0 d=1 n=19 5c8a8635614b1d20
+detect noise_17x19 q=0 d=6 n=5 f4c12f1d60983cc4
+detect noise_17x19 q=0 d=8 n=3 74ee77ec82b9038d
+detect noise_17x19 q=0 d=100 n=1 05ce7aba3b608d9b
+detect noise_17x19 q=0.01 d=0 n=19 5c8a8635614b1d20
+detect noise_17x19 q=0.01 d=1 n=19 5c8a8635614b1d20
+detect noise_17x19 q=0.01 d=6 n=5 f4c12f1d60983cc4
+detect noise_17x19 q=0.01 d=8 n=3 74ee77ec82b9038d
+detect noise_17x19 q=0.01 d=100 n=1 05ce7aba3b608d9b
+detect noise_17x19 q=0.05 d=0 n=19 5c8a8635614b1d20
+detect noise_17x19 q=0.05 d=1 n=19 5c8a8635614b1d20
+detect noise_17x19 q=0.05 d=6 n=5 f4c12f1d60983cc4
+detect noise_17x19 q=0.05 d=8 n=3 74ee77ec82b9038d
+detect noise_17x19 q=0.05 d=100 n=1 05ce7aba3b608d9b
+detect noise_17x19 q=0.3 d=0 n=17 9e574a1ddf3120a1
+detect noise_17x19 q=0.3 d=1 n=17 9e574a1ddf3120a1
+detect noise_17x19 q=0.3 d=6 n=4 1c06ed0361c47b50
+detect noise_17x19 q=0.3 d=8 n=3 74ee77ec82b9038d
+detect noise_17x19 q=0.3 d=100 n=1 05ce7aba3b608d9b
+detect noise_17x19 q=1 d=0 n=1 05ce7aba3b608d9b
+detect noise_17x19 q=1 d=1 n=1 05ce7aba3b608d9b
+detect noise_17x19 q=1 d=6 n=1 05ce7aba3b608d9b
+detect noise_17x19 q=1 d=8 n=1 05ce7aba3b608d9b
+detect noise_17x19 q=1 d=100 n=1 05ce7aba3b608d9b
+grid noise_17x19 1x1 b=10 e=0 n=5 f4c12f1d60983cc4
+grid noise_17x19 1x1 b=10 e=6 n=1 71b377b3305a34b5
+grid noise_17x19 6x4 b=5 e=0 n=5 f4c12f1d60983cc4
+grid noise_17x19 6x4 b=5 e=6 n=1 71b377b3305a34b5
+grid noise_17x19 3x2 b=1 e=0 n=5 f4c12f1d60983cc4
+grid noise_17x19 3x2 b=1 e=6 n=1 71b377b3305a34b5
+detect noise_33x1 q=0 d=0 n=0 cbf29ce484222325
+detect noise_33x1 q=0 d=1 n=0 cbf29ce484222325
+detect noise_33x1 q=0 d=6 n=0 cbf29ce484222325
+detect noise_33x1 q=0 d=8 n=0 cbf29ce484222325
+detect noise_33x1 q=0 d=100 n=0 cbf29ce484222325
+detect noise_33x1 q=0.01 d=0 n=0 cbf29ce484222325
+detect noise_33x1 q=0.01 d=1 n=0 cbf29ce484222325
+detect noise_33x1 q=0.01 d=6 n=0 cbf29ce484222325
+detect noise_33x1 q=0.01 d=8 n=0 cbf29ce484222325
+detect noise_33x1 q=0.01 d=100 n=0 cbf29ce484222325
+detect noise_33x1 q=0.05 d=0 n=0 cbf29ce484222325
+detect noise_33x1 q=0.05 d=1 n=0 cbf29ce484222325
+detect noise_33x1 q=0.05 d=6 n=0 cbf29ce484222325
+detect noise_33x1 q=0.05 d=8 n=0 cbf29ce484222325
+detect noise_33x1 q=0.05 d=100 n=0 cbf29ce484222325
+detect noise_33x1 q=0.3 d=0 n=0 cbf29ce484222325
+detect noise_33x1 q=0.3 d=1 n=0 cbf29ce484222325
+detect noise_33x1 q=0.3 d=6 n=0 cbf29ce484222325
+detect noise_33x1 q=0.3 d=8 n=0 cbf29ce484222325
+detect noise_33x1 q=0.3 d=100 n=0 cbf29ce484222325
+detect noise_33x1 q=1 d=0 n=0 cbf29ce484222325
+detect noise_33x1 q=1 d=1 n=0 cbf29ce484222325
+detect noise_33x1 q=1 d=6 n=0 cbf29ce484222325
+detect noise_33x1 q=1 d=8 n=0 cbf29ce484222325
+detect noise_33x1 q=1 d=100 n=0 cbf29ce484222325
+grid noise_33x1 1x1 b=10 e=0 n=0 cbf29ce484222325
+grid noise_33x1 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid noise_33x1 6x4 b=5 e=0 n=0 cbf29ce484222325
+grid noise_33x1 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid noise_33x1 3x2 b=1 e=0 n=0 cbf29ce484222325
+grid noise_33x1 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_1x33 q=0 d=0 n=0 cbf29ce484222325
+detect noise_1x33 q=0 d=1 n=0 cbf29ce484222325
+detect noise_1x33 q=0 d=6 n=0 cbf29ce484222325
+detect noise_1x33 q=0 d=8 n=0 cbf29ce484222325
+detect noise_1x33 q=0 d=100 n=0 cbf29ce484222325
+detect noise_1x33 q=0.01 d=0 n=0 cbf29ce484222325
+detect noise_1x33 q=0.01 d=1 n=0 cbf29ce484222325
+detect noise_1x33 q=0.01 d=6 n=0 cbf29ce484222325
+detect noise_1x33 q=0.01 d=8 n=0 cbf29ce484222325
+detect noise_1x33 q=0.01 d=100 n=0 cbf29ce484222325
+detect noise_1x33 q=0.05 d=0 n=0 cbf29ce484222325
+detect noise_1x33 q=0.05 d=1 n=0 cbf29ce484222325
+detect noise_1x33 q=0.05 d=6 n=0 cbf29ce484222325
+detect noise_1x33 q=0.05 d=8 n=0 cbf29ce484222325
+detect noise_1x33 q=0.05 d=100 n=0 cbf29ce484222325
+detect noise_1x33 q=0.3 d=0 n=0 cbf29ce484222325
+detect noise_1x33 q=0.3 d=1 n=0 cbf29ce484222325
+detect noise_1x33 q=0.3 d=6 n=0 cbf29ce484222325
+detect noise_1x33 q=0.3 d=8 n=0 cbf29ce484222325
+detect noise_1x33 q=0.3 d=100 n=0 cbf29ce484222325
+detect noise_1x33 q=1 d=0 n=0 cbf29ce484222325
+detect noise_1x33 q=1 d=1 n=0 cbf29ce484222325
+detect noise_1x33 q=1 d=6 n=0 cbf29ce484222325
+detect noise_1x33 q=1 d=8 n=0 cbf29ce484222325
+detect noise_1x33 q=1 d=100 n=0 cbf29ce484222325
+grid noise_1x33 1x1 b=10 e=0 n=0 cbf29ce484222325
+grid noise_1x33 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid noise_1x33 6x4 b=5 e=0 n=0 cbf29ce484222325
+grid noise_1x33 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid noise_1x33 3x2 b=1 e=0 n=0 cbf29ce484222325
+grid noise_1x33 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_2x2 q=0 d=0 n=0 cbf29ce484222325
+detect noise_2x2 q=0 d=1 n=0 cbf29ce484222325
+detect noise_2x2 q=0 d=6 n=0 cbf29ce484222325
+detect noise_2x2 q=0 d=8 n=0 cbf29ce484222325
+detect noise_2x2 q=0 d=100 n=0 cbf29ce484222325
+detect noise_2x2 q=0.01 d=0 n=0 cbf29ce484222325
+detect noise_2x2 q=0.01 d=1 n=0 cbf29ce484222325
+detect noise_2x2 q=0.01 d=6 n=0 cbf29ce484222325
+detect noise_2x2 q=0.01 d=8 n=0 cbf29ce484222325
+detect noise_2x2 q=0.01 d=100 n=0 cbf29ce484222325
+detect noise_2x2 q=0.05 d=0 n=0 cbf29ce484222325
+detect noise_2x2 q=0.05 d=1 n=0 cbf29ce484222325
+detect noise_2x2 q=0.05 d=6 n=0 cbf29ce484222325
+detect noise_2x2 q=0.05 d=8 n=0 cbf29ce484222325
+detect noise_2x2 q=0.05 d=100 n=0 cbf29ce484222325
+detect noise_2x2 q=0.3 d=0 n=0 cbf29ce484222325
+detect noise_2x2 q=0.3 d=1 n=0 cbf29ce484222325
+detect noise_2x2 q=0.3 d=6 n=0 cbf29ce484222325
+detect noise_2x2 q=0.3 d=8 n=0 cbf29ce484222325
+detect noise_2x2 q=0.3 d=100 n=0 cbf29ce484222325
+detect noise_2x2 q=1 d=0 n=0 cbf29ce484222325
+detect noise_2x2 q=1 d=1 n=0 cbf29ce484222325
+detect noise_2x2 q=1 d=6 n=0 cbf29ce484222325
+detect noise_2x2 q=1 d=8 n=0 cbf29ce484222325
+detect noise_2x2 q=1 d=100 n=0 cbf29ce484222325
+grid noise_2x2 1x1 b=10 e=0 n=0 cbf29ce484222325
+grid noise_2x2 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid noise_2x2 6x4 b=5 e=0 n=0 cbf29ce484222325
+grid noise_2x2 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid noise_2x2 3x2 b=1 e=0 n=0 cbf29ce484222325
+grid noise_2x2 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_65x49 q=0 d=0 n=197 7a061974801df7f7
+detect noise_65x49 q=0 d=1 n=197 7a061974801df7f7
+detect noise_65x49 q=0 d=6 n=50 58427ea63d6c0871
+detect noise_65x49 q=0 d=8 n=32 43ac29973e1fc950
+detect noise_65x49 q=0 d=100 n=1 f6312358ba2e8b6c
+detect noise_65x49 q=0.01 d=0 n=197 7a061974801df7f7
+detect noise_65x49 q=0.01 d=1 n=197 7a061974801df7f7
+detect noise_65x49 q=0.01 d=6 n=50 58427ea63d6c0871
+detect noise_65x49 q=0.01 d=8 n=32 43ac29973e1fc950
+detect noise_65x49 q=0.01 d=100 n=1 f6312358ba2e8b6c
+detect noise_65x49 q=0.05 d=0 n=197 7a061974801df7f7
+detect noise_65x49 q=0.05 d=1 n=197 7a061974801df7f7
+detect noise_65x49 q=0.05 d=6 n=50 58427ea63d6c0871
+detect noise_65x49 q=0.05 d=8 n=32 43ac29973e1fc950
+detect noise_65x49 q=0.05 d=100 n=1 f6312358ba2e8b6c
+detect noise_65x49 q=0.3 d=0 n=174 3bd1d59157fb36b0
+detect noise_65x49 q=0.3 d=1 n=174 3bd1d59157fb36b0
+detect noise_65x49 q=0.3 d=6 n=47 43e504633511ca21
+detect noise_65x49 q=0.3 d=8 n=30 61b90c2590666708
+detect noise_65x49 q=0.3 d=100 n=1 f6312358ba2e8b6c
+detect noise_65x49 q=1 d=0 n=1 f6312358ba2e8b6c
+detect noise_65x49 q=1 d=1 n=1 f6312358ba2e8b6c
+detect noise_65x49 q=1 d=6 n=1 f6312358ba2e8b6c
+detect noise_65x49 q=1 d=8 n=1 f6312358ba2e8b6c
+detect noise_65x49 q=1 d=100 n=1 f6312358ba2e8b6c
+grid noise_65x49 1x1 b=10 e=0 n=10 afb3b57f541c99ae
+grid noise_65x49 1x1 b=10 e=6 n=4 f488c934dcb0d818
+grid noise_65x49 6x4 b=5 e=0 n=50 58427ea63d6c0871
+grid noise_65x49 6x4 b=5 e=6 n=45 c87445b174f48600
+grid noise_65x49 3x2 b=1 e=0 n=6 1072a3c0ca29c1e3
+grid noise_65x49 3x2 b=1 e=6 n=2 7230b5b5501d7863
+detect noise_127x61 q=0 d=0 n=496 6a464fa9b356935b
+detect noise_127x61 q=0 d=1 n=496 6a464fa9b356935b
+detect noise_127x61 q=0 d=6 n=118 5f911e3da5ca0f4e
+detect noise_127x61 q=0 d=8 n=74 a543a9446172283c
+detect noise_127x61 q=0 d=100 n=1 b9400e617aaa0ec0
+detect noise_127x61 q=0.01 d=0 n=496 6a464fa9b356935b
+detect noise_127x61 q=0.01 d=1 n=496 6a464fa9b356935b
+detect noise_127x61 q=0.01 d=6 n=118 5f911e3da5ca0f4e
+detect noise_127x61 q=0.01 d=8 n=74 a543a9446172283c
+detect noise_127x61 q=0.01 d=100 n=1 b9400e617aaa0ec0
+detect noise_127x61 q=0.05 d=0 n=496 6a464fa9b356935b
+detect noise_127x61 q=0.05 d=1 n=496 6a464fa9b356935b
+detect noise_127x61 q=0.05 d=6 n=118 5f911e3da5ca0f4e
+detect noise_127x61 q=0.05 d=8 n=74 a543a9446172283c
+detect noise_127x61 q=0.05 d=100 n=1 b9400e617aaa0ec0
+detect noise_127x61 q=0.3 d=0 n=394 6c2e1b921af0b8ea
+detect noise_127x61 q=0.3 d=1 n=394 6c2e1b921af0b8ea
+detect noise_127x61 q=0.3 d=6 n=112 d8273534a95b814a
+detect noise_127x61 q=0.3 d=8 n=70 80fc4151be4d8451
+detect noise_127x61 q=0.3 d=100 n=1 b9400e617aaa0ec0
+detect noise_127x61 q=1 d=0 n=1 b9400e617aaa0ec0
+detect noise_127x61 q=1 d=1 n=1 b9400e617aaa0ec0
+detect noise_127x61 q=1 d=6 n=1 b9400e617aaa0ec0
+detect noise_127x61 q=1 d=8 n=1 b9400e617aaa0ec0
+detect noise_127x61 q=1 d=100 n=1 b9400e617aaa0ec0
+grid noise_127x61 1x1 b=10 e=0 n=10 9d191bd01537eb25
+grid noise_127x61 1x1 b=10 e=6 n=4 7f2a7c98537212f7
+grid noise_127x61 6x4 b=5 e=0 n=114 e2dd6974025eccaa
+grid noise_127x61 6x4 b=5 e=6 n=106 6922cd99fd445c5e
+grid noise_127x61 3x2 b=1 e=0 n=6 504adcf6780c8308
+grid noise_127x61 3x2 b=1 e=6 n=2 49aa031d0570d961
+detect checker_1 q=0 d=0 n=4 d5f0320a76329bfd
+detect checker_1 q=0 d=1 n=4 d5f0320a76329bfd
+detect checker_1 q=0 d=6 n=1 0a833ed437a7a979
+detect checker_1 q=0 d=8 n=1 0a833ed437a7a979
+detect checker_1 q=0 d=100 n=1 0a833ed437a7a979
+detect checker_1 q=0.01 d=0 n=4 d5f0320a76329bfd
+detect checker_1 q=0.01 d=1 n=4 d5f0320a76329bfd
+detect checker_1 q=0.01 d=6 n=1 0a833ed437a7a979
+detect checker_1 q=0.01 d=8 n=1 0a833ed437a7a979
+detect checker_1 q=0.01 d=100 n=1 0a833ed437a7a979
+detect checker_1 q=0.05 d=0 n=4 d5f0320a76329bfd
+detect checker_1 q=0.05 d=1 n=4 d5f0320a76329bfd
+detect checker_1 q=0.05 d=6 n=1 0a833ed437a7a979
+detect checker_1 q=0.05 d=8 n=1 0a833ed437a7a979
+detect checker_1 q=0.05 d=100 n=1 0a833ed437a7a979
+detect checker_1 q=0.3 d=0 n=4 d5f0320a76329bfd
+detect checker_1 q=0.3 d=1 n=4 d5f0320a76329bfd
+detect checker_1 q=0.3 d=6 n=1 0a833ed437a7a979
+detect checker_1 q=0.3 d=8 n=1 0a833ed437a7a979
+detect checker_1 q=0.3 d=100 n=1 0a833ed437a7a979
+detect checker_1 q=1 d=0 n=4 d5f0320a76329bfd
+detect checker_1 q=1 d=1 n=4 d5f0320a76329bfd
+detect checker_1 q=1 d=6 n=1 0a833ed437a7a979
+detect checker_1 q=1 d=8 n=1 0a833ed437a7a979
+detect checker_1 q=1 d=100 n=1 0a833ed437a7a979
+grid checker_1 1x1 b=10 e=0 n=1 0a833ed437a7a979
+grid checker_1 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid checker_1 6x4 b=5 e=0 n=1 0a833ed437a7a979
+grid checker_1 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid checker_1 3x2 b=1 e=0 n=1 0a833ed437a7a979
+grid checker_1 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_2 q=0 d=0 n=4 c9c08b8e38f55f2d
+detect checker_2 q=0 d=1 n=4 c9c08b8e38f55f2d
+detect checker_2 q=0 d=6 n=1 0a833bd437a7a460
+detect checker_2 q=0 d=8 n=1 0a833bd437a7a460
+detect checker_2 q=0 d=100 n=1 0a833bd437a7a460
+detect checker_2 q=0.01 d=0 n=4 c9c08b8e38f55f2d
+detect checker_2 q=0.01 d=1 n=4 c9c08b8e38f55f2d
+detect checker_2 q=0.01 d=6 n=1 0a833bd437a7a460
+detect checker_2 q=0.01 d=8 n=1 0a833bd437a7a460
+detect checker_2 q=0.01 d=100 n=1 0a833bd437a7a460
+detect checker_2 q=0.05 d=0 n=4 c9c08b8e38f55f2d
+detect checker_2 q=0.05 d=1 n=4 c9c08b8e38f55f2d
+detect checker_2 q=0.05 d=6 n=1 0a833bd437a7a460
+detect checker_2 q=0.05 d=8 n=1 0a833bd437a7a460
+detect checker_2 q=0.05 d=100 n=1 0a833bd437a7a460
+detect checker_2 q=0.3 d=0 n=4 c9c08b8e38f55f2d
+detect checker_2 q=0.3 d=1 n=4 c9c08b8e38f55f2d
+detect checker_2 q=0.3 d=6 n=1 0a833bd437a7a460
+detect checker_2 q=0.3 d=8 n=1 0a833bd437a7a460
+detect checker_2 q=0.3 d=100 n=1 0a833bd437a7a460
+detect checker_2 q=1 d=0 n=4 c9c08b8e38f55f2d
+detect checker_2 q=1 d=1 n=4 c9c08b8e38f55f2d
+detect checker_2 q=1 d=6 n=1 0a833bd437a7a460
+detect checker_2 q=1 d=8 n=1 0a833bd437a7a460
+detect checker_2 q=1 d=100 n=1 0a833bd437a7a460
+grid checker_2 1x1 b=10 e=0 n=1 0a833bd437a7a460
+grid checker_2 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid checker_2 6x4 b=5 e=0 n=1 0a833bd437a7a460
+grid checker_2 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid checker_2 3x2 b=1 e=0 n=1 0a833bd437a7a460
+grid checker_2 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_7 q=0 d=0 n=4 80051ab79ea07e79
+detect checker_7 q=0 d=1 n=4 80051ab79ea07e79
+detect checker_7 q=0 d=6 n=1 b88bbfd1c6035333
+detect checker_7 q=0 d=8 n=1 b88bbfd1c6035333
+detect checker_7 q=0 d=100 n=1 b88bbfd1c6035333
+detect checker_7 q=0.01 d=0 n=4 80051ab79ea07e79
+detect checker_7 q=0.01 d=1 n=4 80051ab79ea07e79
+detect checker_7 q=0.01 d=6 n=1 b88bbfd1c6035333
+detect checker_7 q=0.01 d=8 n=1 b88bbfd1c6035333
+detect checker_7 q=0.01 d=100 n=1 b88bbfd1c6035333
+detect checker_7 q=0.05 d=0 n=4 80051ab79ea07e79
+detect checker_7 q=0.05 d=1 n=4 80051ab79ea07e79
+detect checker_7 q=0.05 d=6 n=1 b88bbfd1c6035333
+detect checker_7 q=0.05 d=8 n=1 b88bbfd1c6035333
+detect checker_7 q=0.05 d=100 n=1 b88bbfd1c6035333
+detect checker_7 q=0.3 d=0 n=4 80051ab79ea07e79
+detect checker_7 q=0.3 d=1 n=4 80051ab79ea07e79
+detect checker_7 q=0.3 d=6 n=1 b88bbfd1c6035333
+detect checker_7 q=0.3 d=8 n=1 b88bbfd1c6035333
+detect checker_7 q=0.3 d=100 n=1 b88bbfd1c6035333
+detect checker_7 q=1 d=0 n=4 80051ab79ea07e79
+detect checker_7 q=1 d=1 n=4 80051ab79ea07e79
+detect checker_7 q=1 d=6 n=1 b88bbfd1c6035333
+detect checker_7 q=1 d=8 n=1 b88bbfd1c6035333
+detect checker_7 q=1 d=100 n=1 b88bbfd1c6035333
+grid checker_7 1x1 b=10 e=0 n=1 b88bbfd1c6035333
+grid checker_7 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid checker_7 6x4 b=5 e=0 n=1 b88bbfd1c6035333
+grid checker_7 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid checker_7 3x2 b=1 e=0 n=1 b88bbfd1c6035333
+grid checker_7 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_64 q=0 d=0 n=4 f74de08401ccd771
+detect checker_64 q=0 d=1 n=4 f74de08401ccd771
+detect checker_64 q=0 d=6 n=1 0a8378d437a80c07
+detect checker_64 q=0 d=8 n=1 0a8378d437a80c07
+detect checker_64 q=0 d=100 n=1 0a8378d437a80c07
+detect checker_64 q=0.01 d=0 n=4 f74de08401ccd771
+detect checker_64 q=0.01 d=1 n=4 f74de08401ccd771
+detect checker_64 q=0.01 d=6 n=1 0a8378d437a80c07
+detect checker_64 q=0.01 d=8 n=1 0a8378d437a80c07
+detect checker_64 q=0.01 d=100 n=1 0a8378d437a80c07
+detect checker_64 q=0.05 d=0 n=4 f74de08401ccd771
+detect checker_64 q=0.05 d=1 n=4 f74de08401ccd771
+detect checker_64 q=0.05 d=6 n=1 0a8378d437a80c07
+detect checker_64 q=0.05 d=8 n=1 0a8378d437a80c07
+detect checker_64 q=0.05 d=100 n=1 0a8378d437a80c07
+detect checker_64 q=0.3 d=0 n=4 f74de08401ccd771
+detect checker_64 q=0.3 d=1 n=4 f74de08401ccd771
+detect checker_64 q=0.3 d=6 n=1 0a8378d437a80c07
+detect checker_64 q=0.3 d=8 n=1 0a8378d437a80c07
+detect checker_64 q=0.3 d=100 n=1 0a8378d437a80c07
+detect checker_64 q=1 d=0 n=4 f74de08401ccd771
+detect checker_64 q=1 d=1 n=4 f74de08401ccd771
+detect checker_64 q=1 d=6 n=1 0a8378d437a80c07
+detect checker_64 q=1 d=8 n=1 0a8378d437a80c07
+detect checker_64 q=1 d=100 n=1 0a8378d437a80c07
+grid checker_64 1x1 b=10 e=0 n=1 0a8378d437a80c07
+grid checker_64 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid checker_64 6x4 b=5 e=0 n=1 0a8378d437a80c07
+grid checker_64 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid checker_64 3x2 b=1 e=0 n=1 0a8378d437a80c07
+grid checker_64 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_255 q=0 d=0 n=4 d7fc3c374b45006d
+detect checker_255 q=0 d=1 n=4 d7fc3c374b45006d
+detect checker_255 q=0 d=6 n=1 9cf0b05aca40e319
+detect checker_255 q=0 d=8 n=1 9cf0b05aca40e319
+detect checker_255 q=0 d=100 n=1 9cf0b05aca40e319
+detect checker_255 q=0.01 d=0 n=4 d7fc3c374b45006d
+detect checker_255 q=0.01 d=1 n=4 d7fc3c374b45006d
+detect checker_255 q=0.01 d=6 n=1 9cf0b05aca40e319
+detect checker_255 q=0.01 d=8 n=1 9cf0b05aca40e319
+detect checker_255 q=0.01 d=100 n=1 9cf0b05aca40e319
+detect checker_255 q=0.05 d=0 n=4 d7fc3c374b45006d
+detect checker_255 q=0.05 d=1 n=4 d7fc3c374b45006d
+detect checker_255 q=0.05 d=6 n=1 9cf0b05aca40e319
+detect checker_255 q=0.05 d=8 n=1 9cf0b05aca40e319
+detect checker_255 q=0.05 d=100 n=1 9cf0b05aca40e319
+detect checker_255 q=0.3 d=0 n=4 d7fc3c374b45006d
+detect checker_255 q=0.3 d=1 n=4 d7fc3c374b45006d
+detect checker_255 q=0.3 d=6 n=1 9cf0b05aca40e319
+detect checker_255 q=0.3 d=8 n=1 9cf0b05aca40e319
+detect checker_255 q=0.3 d=100 n=1 9cf0b05aca40e319
+detect checker_255 q=1 d=0 n=4 d7fc3c374b45006d
+detect checker_255 q=1 d=1 n=4 d7fc3c374b45006d
+detect checker_255 q=1 d=6 n=1 9cf0b05aca40e319
+detect checker_255 q=1 d=8 n=1 9cf0b05aca40e319
+detect checker_255 q=1 d=100 n=1 9cf0b05aca40e319
+grid checker_255 1x1 b=10 e=0 n=1 9cf0b05aca40e319
+grid checker_255 1x1 b=10 e=6 n=0 cbf29ce484222325
+grid checker_255 6x4 b=5 e=0 n=1 9cf0b05aca40e319
+grid checker_255 6x4 b=5 e=6 n=0 cbf29ce484222325
+grid checker_255 3x2 b=1 e=0 n=1 9cf0b05aca40e319
+grid checker_255 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect binary_noise q=0 d=0 n=196 fd9698e22928733a
+detect binary_noise q=0 d=1 n=196 fd9698e22928733a
+detect binary_noise q=0 d=6 n=47 8a584b2303ed659f
+detect binary_noise q=0 d=8 n=29 0d69ccec56988514
+detect binary_noise q=0 d=100 n=1 e8fb9cfe467dcfd3
+detect binary_noise q=0.01 d=0 n=196 fd9698e22928733a
+detect binary_noise q=0.01 d=1 n=196 fd9698e22928733a
+detect binary_noise q=0.01 d=6 n=47 8a584b2303ed659f
+detect binary_noise q=0.01 d=8 n=29 0d69ccec56988514
+detect binary_noise q=0.01 d=100 n=1 e8fb9cfe467dcfd3
+detect binary_noise q=0.05 d=0 n=196 fd9698e22928733a
+detect binary_noise q=0.05 d=1 n=196 fd9698e22928733a
+detect binary_noise q=0.05 d=6 n=47 8a584b2303ed659f
+detect binary_noise q=0.05 d=8 n=29 0d69ccec56988514
+detect binary_noise q=0.05 d=100 n=1 e8fb9cfe467dcfd3
+detect binary_noise q=0.3 d=0 n=166 a94c10c89296a1a0
+detect binary_noise q=0.3 d=1 n=166 a94c10c89296a1a0
+detect binary_noise q=0.3 d=6 n=45 c938165ede2d11c8
+detect binary_noise q=0.3 d=8 n=29 0d69ccec56988514
+detect binary_noise q=0.3 d=100 n=1 e8fb9cfe467dcfd3
+detect binary_noise q=1 d=0 n=1 e8fb9cfe467dcfd3
+detect binary_noise q=1 d=1 n=1 e8fb9cfe467dcfd3
+detect binary_noise q=1 d=6 n=1 e8fb9cfe467dcfd3
+detect binary_noise q=1 d=8 n=1 e8fb9cfe467dcfd3
+detect binary_noise q=1 d=100 n=1 e8fb9cfe467dcfd3
+grid binary_noise 1x1 b=10 e=0 n=10 56366ab0e5c29b1c
+grid binary_noise 1x1 b=10 e=6 n=4 e947372b87e96e23
+grid binary_noise 6x4 b=5 e=0 n=47 8a584b2303ed659f
+grid binary_noise 6x4 b=5 e=6 n=43 f1a119f1a499af2c
+grid binary_noise 3x2 b=1 e=0 n=6 2afeaed9ef244250
+grid binary_noise 3x2 b=1 e=6 n=2 9605057134c9124a
+detect border_max q=0 d=0 n=144 e4df1673cd289b69
+detect border_max q=0 d=1 n=144 e4df1673cd289b69
+detect border_max q=0 d=6 n=22 8eb0d162eb58ba6e
+detect border_max q=0 d=8 n=12 ecf62a8e9790cbbf
+detect border_max q=0 d=100 n=1 1a953eefc1b18298
+detect border_max q=0.01 d=0 n=144 e4df1673cd289b69
+detect border_max q=0.01 d=1 n=144 e4df1673cd289b69
+detect border_max q=0.01 d=6 n=22 8eb0d162eb58ba6e
+detect border_max q=0.01 d=8 n=12 ecf62a8e9790cbbf
+detect border_max q=0.01 d=100 n=1 1a953eefc1b18298
+detect border_max q=0.05 d=0 n=144 e4df1673cd289b69
+detect border_max q=0.05 d=1 n=144 e4df1673cd289b69
+detect border_max q=0.05 d=6 n=22 8eb0d162eb58ba6e
+detect border_max q=0.05 d=8 n=12 ecf62a8e9790cbbf
+detect border_max q=0.05 d=100 n=1 1a953eefc1b18298
+detect border_max q=0.3 d=0 n=4 6dfdfdb27e8e65c9
+detect border_max q=0.3 d=1 n=4 6dfdfdb27e8e65c9
+detect border_max q=0.3 d=6 n=1 1a953eefc1b18298
+detect border_max q=0.3 d=8 n=1 1a953eefc1b18298
+detect border_max q=0.3 d=100 n=1 1a953eefc1b18298
+detect border_max q=1 d=0 n=4 6dfdfdb27e8e65c9
+detect border_max q=1 d=1 n=4 6dfdfdb27e8e65c9
+detect border_max q=1 d=6 n=1 1a953eefc1b18298
+detect border_max q=1 d=8 n=1 1a953eefc1b18298
+detect border_max q=1 d=100 n=1 1a953eefc1b18298
+grid border_max 1x1 b=10 e=0 n=10 7332e54d9f3ee881
+grid border_max 1x1 b=10 e=6 n=4 1916f2ba60080731
+grid border_max 6x4 b=5 e=0 n=22 8eb0d162eb58ba6e
+grid border_max 6x4 b=5 e=6 n=16 6509c401e38fc0ff
+grid border_max 3x2 b=1 e=0 n=6 b63defde51e11369
+grid border_max 3x2 b=1 e=6 n=2 cc8a0dbb8927a534
+track s=(0.4,-0.3) l=1 w=7 i=10 n=108 tracked=89 e7b7e78c8ac8236b
+track_guess s=(0.4,-0.3) l=1 w=7 i=10 n=108 tracked=89 756dce81e31d3c89
+track_fb s=(0.4,-0.3) l=1 w=7 i=10 n=108 tracked=88 6debbf716d53a31f
+track s=(0.4,-0.3) l=3 w=15 i=15 n=108 tracked=78 faff5b26075d5c89
+track_guess s=(0.4,-0.3) l=3 w=15 i=15 n=108 tracked=78 0899cc2374c691c2
+track_fb s=(0.4,-0.3) l=3 w=15 i=15 n=108 tracked=78 faff5b26075d5c89
+track s=(0.4,-0.3) l=4 w=21 i=30 n=108 tracked=78 203f74f3d1c78ddd
+track_guess s=(0.4,-0.3) l=4 w=21 i=30 n=108 tracked=78 66e6d46bfba2b0ef
+track_fb s=(0.4,-0.3) l=4 w=21 i=30 n=108 tracked=77 5e089f970d537ad1
+track s=(3,2) l=1 w=7 i=10 n=108 tracked=70 5f5d2cdb5235006c
+track_guess s=(3,2) l=1 w=7 i=10 n=108 tracked=93 dd7248a8b5d068cc
+track_fb s=(3,2) l=1 w=7 i=10 n=108 tracked=69 ed5a395ee3a4ef80
+track s=(3,2) l=3 w=15 i=15 n=108 tracked=79 19d4885c530e8389
+track_guess s=(3,2) l=3 w=15 i=15 n=108 tracked=79 45f443a716a64cbc
+track_fb s=(3,2) l=3 w=15 i=15 n=108 tracked=79 19d4885c530e8389
+track s=(3,2) l=4 w=21 i=30 n=108 tracked=78 4debdd6ba6c26788
+track_guess s=(3,2) l=4 w=21 i=30 n=108 tracked=78 1aa2ef90cfccc990
+track_fb s=(3,2) l=4 w=21 i=30 n=108 tracked=78 4debdd6ba6c26788
+track s=(12.5,-7.25) l=1 w=7 i=10 n=108 tracked=10 33bf3e461640a46e
+track_guess s=(12.5,-7.25) l=1 w=7 i=10 n=108 tracked=84 b5df34cbe868980d
+track_fb s=(12.5,-7.25) l=1 w=7 i=10 n=108 tracked=6 6e300d321558cc36
+track s=(12.5,-7.25) l=3 w=15 i=15 n=108 tracked=32 c17e0d252aba2684
+track_guess s=(12.5,-7.25) l=3 w=15 i=15 n=108 tracked=78 f0d8926fdd568163
+track_fb s=(12.5,-7.25) l=3 w=15 i=15 n=108 tracked=25 c8b936d4551d1b50
+track s=(12.5,-7.25) l=4 w=21 i=30 n=108 tracked=49 b29ead7197178eb2
+track_guess s=(12.5,-7.25) l=4 w=21 i=30 n=108 tracked=76 4a5203c69726cd5d
+track_fb s=(12.5,-7.25) l=4 w=21 i=30 n=108 tracked=34 108f703d76a66896
