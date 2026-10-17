@@ -24,22 +24,35 @@ pub fn box_sum_3x3_in_place(image: &mut ImageBuffer<Luma<i32>, Vec<i32>>) {
 }
 
 fn box_sum_horizontal_3x3_in_place(image: &mut ImageBuffer<Luma<i32>, Vec<i32>>) {
-    let (width, height) = (image.width() as usize, image.height() as usize);
+    let width = image.width() as usize;
     let data: &mut [i32] = image;
 
-    for y in 0..height {
-        let row = y * width;
+    // Read from a copy of the row: rereading a written pixel would make this a
+    // recursive filter, and a register chain would serialize the loop.
+    let mut source = vec![0i32; width];
+    for row in data.chunks_exact_mut(width) {
+        source.copy_from_slice(row);
+        sum_row_3(&source, row);
+    }
+}
 
-        // Keep original neighbors in registers: rereading a written pixel would
-        // make this a recursive filter rather than a centered box sum.
-        let mut left = 0i32;
-        let mut center = data[row];
-        for x in 0..width {
-            let right = if x + 1 < width { data[row + x + 1] } else { 0 };
-            data[row + x] = left + center + right;
-            left = center;
-            center = right;
-        }
+/// `dst[x] = src[x - 1] + src[x] + src[x + 1]`, omitting neighbors outside the
+/// row. The interior has no loop-carried dependency, so it vectorizes.
+fn sum_row_3(src: &[i32], dst: &mut [i32]) {
+    let width = src.len();
+    if width == 1 {
+        dst[0] = src[0];
+        return;
+    }
+    dst[0] = src[0] + src[1];
+    dst[width - 1] = src[width - 2] + src[width - 1];
+    let interior = dst[1..width - 1]
+        .iter_mut()
+        .zip(&src[..width - 2])
+        .zip(&src[1..width - 1])
+        .zip(&src[2..]);
+    for (((value, &left), &center), &right) in interior {
+        *value = left + center + right;
     }
 }
 
