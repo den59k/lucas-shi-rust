@@ -349,11 +349,10 @@ fn quality_floor(scores: &[f32], width: usize, height: usize, quality_level: f32
     let (mut interior, mut border) = (0.0f32, 0.0f32);
     for (y, row) in scores.chunks_exact(width).enumerate() {
         if y == 0 || y + 1 == height {
-            border = row.iter().fold(border, |max, &score| max.max(score));
+            border = max_of(row, border);
         } else {
-            let inner = &row[1..width - 1];
-            interior = inner.iter().fold(interior, |max, &score| max.max(score));
-            border = border.max(row[0]).max(row[width - 1]);
+            interior = max_of(&row[1..width - 1], interior);
+            border = max_score(max_score(border, row[0]), row[width - 1]);
         }
     }
     if interior >= border {
@@ -381,7 +380,7 @@ fn local_maxima(scores: &[f32], width: usize, height: usize, floor: f32) -> Vec<
         max_row_3(row(y + 1), &mut ring[(y + 1) % 3]);
         let (above, center, below) = (&ring[(y + 2) % 3], &ring[y % 3], &ring[(y + 1) % 3]);
         for (i, &score) in row(y)[1..width - 1].iter().enumerate() {
-            let neighborhood = above[i].max(center[i]).max(below[i]);
+            let neighborhood = max_score(max_score(above[i], center[i]), below[i]);
             if score > 0.0 && score >= floor && score == neighborhood {
                 maxima.push((i as u32 + 1, y as u32, score));
             }
@@ -394,8 +393,36 @@ fn local_maxima(scores: &[f32], width: usize, height: usize, floor: f32) -> Vec<
 fn max_row_3(src: &[f32], dst: &mut [f32]) {
     let windows = src.iter().zip(&src[1..]).zip(&src[2..]);
     for (value, ((&left, &center), &right)) in dst.iter_mut().zip(windows) {
-        *value = left.max(center).max(right);
+        *value = max_score(max_score(left, center), right);
     }
+}
+
+/// Maximum of two scores. Scores are never NaN, so both forms below are exact.
+/// `f32::max` is one instruction on aarch64 (`fmaxnm`); elsewhere, such as on
+/// WASM, its NaN handling costs extra instructions, so compare instead.
+fn max_score(a: f32, b: f32) -> f32 {
+    if cfg!(target_arch = "aarch64") {
+        a.max(b)
+    } else if a > b {
+        a
+    } else {
+        b
+    }
+}
+
+/// Maximum of `init` and all `scores`. The maximum is exact in any order, so
+/// independent lanes may reduce in parallel, which lets the loop vectorize.
+fn max_of(scores: &[f32], init: f32) -> f32 {
+    let mut lanes = [init; 8];
+    let chunks = scores.chunks_exact(lanes.len());
+    let rest = chunks.remainder();
+    for chunk in chunks {
+        for (lane, &score) in lanes.iter_mut().zip(chunk) {
+            *lane = max_score(*lane, score);
+        }
+    }
+    let max = |max, &score: &f32| max_score(max, score);
+    rest.iter().chain(&lanes).fold(init, max)
 }
 
 fn filter_by_quality(features: &mut Vec<(u32, u32, f32)>, quality_level: f32) {
