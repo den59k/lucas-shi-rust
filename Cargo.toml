@@ -23,8 +23,14 @@ image = "0.25.10"
 nalgebra = "0.34.1"
 
 [dev-dependencies]
-imageproc = "0.26.1"
-criterion = "0.5"
+imageproc = "0.27.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.8.2"
+
+# WASI has no worker threads; use Criterion's sequential bootstrap analysis.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
 [[bench]]
 name = "gradients"
@@ -40,4 +46,8 @@ harness = false
 
 [[bench]]
 name = "features"
+harness = false
+
+[[bench]]
+name = "feature_stages"
 harness = false

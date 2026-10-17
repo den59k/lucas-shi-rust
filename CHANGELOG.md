@@ -13,17 +13,68 @@
 - Preserve every accepted point in spatial occupancy cells when enforcing the
   minimum distance. Previously, a later point could hide an earlier neighbor.
 - Support a zero minimum distance and avoid integer overflow for large distances.
+- Preserve fractional Scharr gradients and window means in detection. Accumulate
+  raw products and 3x3 sums exactly in i32, then normalize the eigenvalue once by
+  `32^2 * sample_count`, including image boundaries.
+- Preserve small eigenvalues of nearly rank-one tensors using an exact i64
+  determinant and `lambda_min = determinant / lambda_max`.
+
+### Performance
+
+- Compute gradient products, 3x3 window sums and scores in one row-by-row pass
+  with a three-row ring buffer instead of three full tensor planes. Both box-sum
+  passes now stream along rows instead of walking columns.
+- Compute scores in f32 after the exact i64 determinant; the formula has no
+  remaining cancellation. Rounding can differ from the previous f64 intermediates,
+  so nearly equal scores can swap order before spacing.
+- Run non-maximum suppression on a score plane with a separable 3x3 maximum and
+  collect only positive maxima. When the global maximum lies inside the image it
+  is the strongest local maximum, so the relative quality threshold is applied
+  while collecting. For a given score plane, selected points are unchanged.
+- Complete plain detection on the five benchmark inputs is 3.4-6.2x faster
+  natively (aarch64) and 2.1-6.0x faster under Node/WASI in the recorded run.
+  See [timings, confidence intervals and output comparisons](benches/results/scoring-performance-2026-10-17.md).
+  These figures compare against the full-plane detector before this work and
+  were recorded before merging the `DetectorContext` changes below.
+- On x86, an AVX2 copy of the detector pipeline is selected at runtime.
+- Tracking: window sampling now hoists the bilinear weights, reads contiguous
+  row slices and accumulates in lanes the compiler vectorizes, with a
+  runtime-selected AVX2 copy on x86. On the bundled 720×405 frame pair, 200
+  points, 21 px window, 4 levels, Ryzen 9 9900X: 21.8 → 3.3 ms native,
+  24.4 → 4.2 ms in wasm with `simd128`.
+- Scalar wasm builds no longer warn about an unused `simd128` import.
+
+### Security
+
+- Update the development dependency imageproc to 0.27.0, which includes fixes for
+  [RUSTSEC-2026-0115](https://rustsec.org/advisories/RUSTSEC-2026-0115.html),
+  [RUSTSEC-2026-0116](https://rustsec.org/advisories/RUSTSEC-2026-0116.html), and
+  [RUSTSEC-2026-0117](https://rustsec.org/advisories/RUSTSEC-2026-0117.html).
+
+### Benchmarks
+
+- Add a low-contrast detection case and a Node WASI runner for the same Criterion
+  harness. WASM uses sequential statistical analysis without worker threads;
+  native Criterion features remain unchanged.
+- Upgrade Criterion from 0.5.1 to 0.8.2 for native and WASM benchmarks. Existing
+  recorded comparisons used 0.5.1 on both revisions and retain that provenance.
+- Measure detector stages and intermediate candidate counts separately, including
+  an equal-input selection control and benchmark-only explicit score-floor/NMS
+  experiments. Adapt the comparison runner to full-plane and fused pipelines,
+  validate discovered benchmark IDs, and record whole-call and stage results on
+  native and WASI without adding profiling code to the library.
 
 Detected positions and scores can change as a consequence of these
-corrections; existing detection thresholds may need retuning. The detector
-retains its integer gradient and filter quantization.
+corrections; existing detection thresholds may need retuning. Eliminating the
+integer gradient and filter truncation changes responses and selected points
+again.
 
 ### Added
 
-- `DetectorContext`: owns the gradient, structure-tensor and score planes, the
-  candidate list and the spacing grid, so `detect` / `detect_grid` perform no
-  heap allocation after the first frame. The free detection functions are now
-  thin wrappers over it. Covered by the zero-allocation test.
+- `DetectorContext`: owns the gradient planes, structure-tensor row buffers,
+  score plane, candidate list and spacing grid, so `detect` / `detect_grid`
+  perform no heap allocation after the first frame. The free detection functions
+  are now thin wrappers over it. Covered by the zero-allocation test.
 - `CONVERGENCE_EPSILON` documents the per-level Lucas-Kanade stopping threshold.
 - `benches/opencv-compare/`: a parity and speed harness against OpenCV, native
   and OpenCV.js.
@@ -39,20 +90,3 @@ retains its integer gradient and filter quantization.
   Positions within one pixel of the right or bottom border, which were
   previously sampled with zero padding, now report `OutOfBounds`.
 - The web demo keeps a `DetectorContext` for its grid top-up.
-
-### Performance
-
-Bundled 720×405 frame pair, 200 points, 21 px window, 4 levels, Ryzen 9 9900X:
-
-- Tracking: window sampling now hoists the bilinear weights, reads contiguous
-  row slices and accumulates in lanes the compiler vectorizes, with a
-  runtime-selected AVX2 copy on x86. 21.8 → 3.3 ms native, 24.4 → 4.2 ms in
-  wasm with `simd128`.
-- Detection: row-wise box filter with a constant divisor, non-maximum
-  suppression directly on a flat score plane instead of a per-pixel tuple
-  vector, AVX2 copy on x86. The minimum eigenvalue is evaluated in f32 as
-  `2·det / (trace + sqrt(disc))` with the determinant and discriminant exact in
-  i32, which is cancellation-free, so the f64 intermediates are gone. 5.1 →
-  1.0 ms native, 5.1 → 1.6 ms in wasm. Corner positions are unchanged; scores
-  differ from 0.4.0-pre by at most one part in ten million.
-- Scalar wasm builds no longer warn about an unused `simd128` import.
