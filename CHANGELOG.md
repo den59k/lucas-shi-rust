@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+- Non-maximum suppression tests each row in groups of eight pixels without
+  branches, which vectorizes, and visits only the pixels a group keeps. Almost
+  every pixel fails the test, so the previous scan mostly paid for branches.
+  Selected corners are unchanged. Whole detection calls on the five benchmark
+  inputs are 9-38% faster natively (aarch64) and 28-40% faster under
+  Node/WASI with `simd128` than 0.4.1; the suppression stage alone is 38-62%
+  and 54-77% faster (Apple M2, means of two alternating rounds).
+
 ## 0.4.1 — 2026-10-18
 
 ### Fixed
