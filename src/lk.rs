@@ -17,6 +17,10 @@ pub type FloatPyramidLevel = ImageBuffer<Luma<f32>, Vec<f32>>;
 /// independent of `window_size`. Its unit is (grey levels / pixel)^2. A window
 /// flatter than this is reported as [`TrackStatus::LowTexture`]. The f32
 /// tracker has no default: its threshold is in the image's own unit.
+///
+/// Thresholds below about 1e-4 are not meaningful: at the strongest 8-bit
+/// edges, f32 rounding of the eigenvalue alone reaches about that size, so
+/// such edges could pass as trackable windows at random.
 pub const DEFAULT_MIN_EIGEN_THRESHOLD: f32 = 1e-3;
 
 /// Per-level convergence threshold, in pixels of the current pyramid level.
@@ -1022,14 +1026,15 @@ impl TrackImage for GrayImage {
     fn spatial_inverse(gxx: f32, gxy: f32, gyy: f32, n_pixels: usize, threshold: f32) -> Spatial {
         // Structured like OpenCV's calcOpticalFlowPyrLK: the smaller
         // eigenvalue per window sample, (trace - discriminant) / 2 in f32,
-        // against the threshold, then a determinant test. Like OpenCV's, it
-        // loses precision for nearly rank-one windows, where the subtraction
-        // cancels; it is kept so that 8-bit results stay comparable with
-        // OpenCV and with earlier releases. It is not identical to OpenCV:
-        // the discriminant is formed as trace^2 - 4 det instead of
-        // (a - c)^2 + 4 b^2, and the sums and the determinant bound are in
-        // (grey levels / pixel)^2, not OpenCV's fixed-point scale. The f32
-        // tracker uses a scale-free test instead.
+        // against the threshold, then a determinant test. It is kept so that
+        // 8-bit results stay comparable with OpenCV and earlier releases.
+        // As in OpenCV, the subtraction cancels for edge-like windows; see
+        // DEFAULT_MIN_EIGEN_THRESHOLD for the resulting noise. Unlike OpenCV,
+        // the discriminant is trace^2 - 4 det rather than (a - c)^2 + 4 b^2,
+        // which costs precision only for nearly isotropic windows, below
+        // 1e-3 relative, too little to move a decision. Sums and the
+        // determinant bound are in (grey levels / pixel)^2, not OpenCV's
+        // fixed-point scale. The f32 tracker uses a scale-free test instead.
         let min_eig = min_eigenvalue(gxx, gxy, gyy) / n_pixels as f32;
         if min_eig < threshold {
             return Spatial::LowTexture {
