@@ -1020,6 +1020,16 @@ impl TrackImage for GrayImage {
 
     #[inline(always)]
     fn spatial_inverse(gxx: f32, gxy: f32, gyy: f32, n_pixels: usize, threshold: f32) -> Spatial {
+        // Structured like OpenCV's calcOpticalFlowPyrLK: the smaller
+        // eigenvalue per window sample, (trace - discriminant) / 2 in f32,
+        // against the threshold, then a determinant test. Like OpenCV's, it
+        // loses precision for nearly rank-one windows, where the subtraction
+        // cancels; it is kept so that 8-bit results stay comparable with
+        // OpenCV and with earlier releases. It is not identical to OpenCV:
+        // the discriminant is formed as trace^2 - 4 det instead of
+        // (a - c)^2 + 4 b^2, and the sums and the determinant bound are in
+        // (grey levels / pixel)^2, not OpenCV's fixed-point scale. The f32
+        // tracker uses a scale-free test instead.
         let min_eig = min_eigenvalue(gxx, gxy, gyy) / n_pixels as f32;
         if min_eig < threshold {
             return Spatial::LowTexture {
