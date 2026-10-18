@@ -1,10 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-18
 
 ### Breaking changes
-
-The next release is therefore 0.5.0.
 
 - Detection returns `Corner { x, y, score }` instead of `(x, y, score)`
   tuples: `good_features_to_track`, `good_features_to_track_grid`, and

@@ -21,7 +21,7 @@ High-performance Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-optical-flow-lk = "0.4"
+optical-flow-lk = "0.5"
 ```
 
 Basic example — detect corners in one frame and track them into the next:
