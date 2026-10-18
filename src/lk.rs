@@ -1,4 +1,4 @@
-use image::{GrayImage, ImageBuffer, Luma};
+use image::{GrayImage, ImageBuffer, Luma, Pixel};
 
 use crate::features::reserve_total;
 use crate::float_image::FloatImageView;
@@ -1105,15 +1105,31 @@ struct Tracker<I: TrackImage> {
     backward: Vec<TrackResult>,
 }
 
-impl<I: TrackImage> Tracker<I> {
-    /// Everything except the pyramids, whose levels the caller reserves.
-    fn reserve_buffers(&mut self, capacity: &TrackerCapacity) {
+impl<P> Tracker<ImageBuffer<P, Vec<P::Subpixel>>>
+where
+    P: Pixel,
+    P::Subpixel: Default,
+    ImageBuffer<P, Vec<P::Subpixel>>: TrackImage,
+{
+    /// Allocates both pyramids and every buffer for `capacity`.
+    fn reserve(&mut self, capacity: &TrackerCapacity) {
+        let TrackerCapacity {
+            width,
+            height,
+            levels,
+            points,
+            ..
+        } = *capacity;
+        reserve_pyramid(&mut self.prev_pyramid, width, height, levels);
+        reserve_pyramid(&mut self.next_pyramid, width, height, levels);
         self.scratch.reserve(capacity);
-        reserve_total(&mut self.results, capacity.points);
-        reserve_total(&mut self.forward_pos, capacity.points);
-        reserve_total(&mut self.backward, capacity.points);
+        reserve_total(&mut self.results, points);
+        reserve_total(&mut self.forward_pos, points);
+        reserve_total(&mut self.backward, points);
     }
+}
 
+impl<I: TrackImage> Tracker<I> {
     fn track(
         &mut self,
         prev_points: &[(f32, f32)],
@@ -1215,16 +1231,7 @@ impl TrackerContext {
     /// Allocates every buffer for `capacity` now, so that later calls within
     /// it do not allocate. Existing capacity is kept.
     pub fn reserve(&mut self, capacity: TrackerCapacity) {
-        let TrackerCapacity {
-            width,
-            height,
-            levels,
-            ..
-        } = capacity;
-        let tracker = &mut self.tracker;
-        reserve_pyramid(&mut tracker.prev_pyramid, width, height, levels);
-        reserve_pyramid(&mut tracker.next_pyramid, width, height, levels);
-        tracker.reserve_buffers(&capacity);
+        self.tracker.reserve(&capacity);
     }
 
     /// Builds the previous- and next-frame pyramids into the context's reusable
@@ -1333,16 +1340,7 @@ impl FloatTrackerContext {
     /// Allocates every buffer for `capacity` now, so that later calls within
     /// it do not allocate. Existing capacity is kept.
     pub fn reserve(&mut self, capacity: TrackerCapacity) {
-        let TrackerCapacity {
-            width,
-            height,
-            levels,
-            ..
-        } = capacity;
-        let tracker = &mut self.tracker;
-        reserve_pyramid(&mut tracker.prev_pyramid, width, height, levels);
-        reserve_pyramid(&mut tracker.next_pyramid, width, height, levels);
-        tracker.reserve_buffers(&capacity);
+        self.tracker.reserve(&capacity);
     }
 
     /// Builds the previous- and next-frame pyramids with up to `levels`
