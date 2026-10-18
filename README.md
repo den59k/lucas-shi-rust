@@ -136,6 +136,8 @@ corners bit for bit. On a 640x480 frame on an Apple M2, a whole frame step
 (pyramids, forward-backward tracking, grid top-up) costs about 1.1x the 8-bit
 pipeline on the same data, natively and under WASI; tracking alone is faster in
 f32. See [the measurements](benches/results/float-vs-u8-2026-10-17.md).
+Against the published 0.3.1, the f32 frame step is 3.3-3.6x faster natively
+and 2.9-3.1x faster under WASI ([comparison](benches/results/v0.3.1-vs-current-2026-10-17.md)).
 
 [`TrackerContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.TrackerContext.html
 [`DetectorContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.DetectorContext.html

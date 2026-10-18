@@ -182,3 +182,11 @@ timing. The same harness runs under WASI as described above.
 
 The recorded run is in
 [float-vs-u8-2026-10-17.md](results/float-vs-u8-2026-10-17.md).
+
+## Against 0.3.1
+
+[v0.3.1-vs-current-2026-10-17.md](results/v0.3.1-vs-current-2026-10-17.md)
+compares the published 0.3.1 crate with the current 8-bit and f32 pipelines on
+the inputs above, natively and under WASI. Both sides were built from one
+harness source, stored next to the report, against the 0.3.1 source tree and
+this repository; the report lists the build and run order.
