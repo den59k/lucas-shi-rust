@@ -165,6 +165,20 @@ fn detection_lines() -> Vec<String> {
                 ));
             }
         }
+        // The 8-bit API does not validate quality_level; pin what it does
+        // outside 0..=1.
+        for quality in [f32::NAN, -1.0, 2.0, f32::INFINITY] {
+            let corners = good_features_to_track(&image, quality, 6);
+            lines.push(corners_line(
+                format!("detect {name} q={quality} d=6"),
+                &corners,
+            ));
+            let corners = good_features_to_track_grid(&image, 6, 4, 5, quality, 6, &existing);
+            lines.push(corners_line(
+                format!("grid {name} 6x4 b=5 e=6 q={quality}"),
+                &corners,
+            ));
+        }
     }
     lines
 }

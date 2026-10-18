@@ -29,6 +29,14 @@ grid example_720x405 6x4 b=5 e=0 n=97 c467997648113057
 grid example_720x405 6x4 b=5 e=6 n=91 f576434b1e0b5f55
 grid example_720x405 3x2 b=1 e=0 n=6 86a771bd694392f5
 grid example_720x405 3x2 b=1 e=6 n=5 69cd8764ff3e83a0
+detect example_720x405 q=NaN d=6 n=0 cbf29ce484222325
+grid example_720x405 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect example_720x405 q=-1 d=6 n=4160 470427f12d48fae2
+grid example_720x405 6x4 b=5 e=6 q=-1 n=114 a6dda8ab6881c5f9
+detect example_720x405 q=2 d=6 n=0 cbf29ce484222325
+grid example_720x405 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect example_720x405 q=inf d=6 n=0 cbf29ce484222325
+grid example_720x405 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect texture_320x240 q=0 d=0 n=4238 2577b0bd84ddae8c
 detect texture_320x240 q=0 d=1 n=4238 2577b0bd84ddae8c
 detect texture_320x240 q=0 d=6 n=1138 f3f46e2cc22644e9
@@ -60,6 +68,14 @@ grid texture_320x240 6x4 b=5 e=0 n=120 5bdca59252e919eb
 grid texture_320x240 6x4 b=5 e=6 n=114 bd21bb91fed386c1
 grid texture_320x240 3x2 b=1 e=0 n=6 924b24456ee2a733
 grid texture_320x240 3x2 b=1 e=6 n=4 e7e126f0ce368ac7
+detect texture_320x240 q=NaN d=6 n=0 cbf29ce484222325
+grid texture_320x240 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect texture_320x240 q=-1 d=6 n=1138 f3f46e2cc22644e9
+grid texture_320x240 6x4 b=5 e=6 q=-1 n=114 bd21bb91fed386c1
+detect texture_320x240 q=2 d=6 n=0 cbf29ce484222325
+grid texture_320x240 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect texture_320x240 q=inf d=6 n=0 cbf29ce484222325
+grid texture_320x240 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect texture_640x480 q=0 d=0 n=17006 2c785dceb91a5fa0
 detect texture_640x480 q=0 d=1 n=17006 2c785dceb91a5fa0
 detect texture_640x480 q=0 d=6 n=4547 8aed8ee1d8c778fc
@@ -91,6 +107,14 @@ grid texture_640x480 6x4 b=5 e=0 n=120 28cc9994d90ffc3c
 grid texture_640x480 6x4 b=5 e=6 n=114 f44e5eaac9b9c135
 grid texture_640x480 3x2 b=1 e=0 n=6 776b556f8de5e4d0
 grid texture_640x480 3x2 b=1 e=6 n=5 ea0f708d294c7fe2
+detect texture_640x480 q=NaN d=6 n=0 cbf29ce484222325
+grid texture_640x480 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect texture_640x480 q=-1 d=6 n=4547 8aed8ee1d8c778fc
+grid texture_640x480 6x4 b=5 e=6 q=-1 n=114 f44e5eaac9b9c135
+detect texture_640x480 q=2 d=6 n=0 cbf29ce484222325
+grid texture_640x480 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect texture_640x480 q=inf d=6 n=0 cbf29ce484222325
+grid texture_640x480 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect low_contrast_320x240 q=0 d=0 n=3795 36d68f200b340cbb
 detect low_contrast_320x240 q=0 d=1 n=3795 36d68f200b340cbb
 detect low_contrast_320x240 q=0 d=6 n=1098 3193bae179b8875d
@@ -122,6 +146,14 @@ grid low_contrast_320x240 6x4 b=5 e=0 n=120 15a0ef8b697d4085
 grid low_contrast_320x240 6x4 b=5 e=6 n=114 59bb14296512dd06
 grid low_contrast_320x240 3x2 b=1 e=0 n=6 323d5373a84fb98c
 grid low_contrast_320x240 3x2 b=1 e=6 n=4 c50f6a0eb141c3fc
+detect low_contrast_320x240 q=NaN d=6 n=0 cbf29ce484222325
+grid low_contrast_320x240 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect low_contrast_320x240 q=-1 d=6 n=1098 3193bae179b8875d
+grid low_contrast_320x240 6x4 b=5 e=6 q=-1 n=114 59bb14296512dd06
+detect low_contrast_320x240 q=2 d=6 n=0 cbf29ce484222325
+grid low_contrast_320x240 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect low_contrast_320x240 q=inf d=6 n=0 cbf29ce484222325
+grid low_contrast_320x240 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect flat_640x480 q=0 d=0 n=0 cbf29ce484222325
 detect flat_640x480 q=0 d=1 n=0 cbf29ce484222325
 detect flat_640x480 q=0 d=6 n=0 cbf29ce484222325
@@ -153,6 +185,14 @@ grid flat_640x480 6x4 b=5 e=0 n=0 cbf29ce484222325
 grid flat_640x480 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid flat_640x480 3x2 b=1 e=0 n=0 cbf29ce484222325
 grid flat_640x480 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect flat_640x480 q=NaN d=6 n=0 cbf29ce484222325
+grid flat_640x480 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect flat_640x480 q=-1 d=6 n=0 cbf29ce484222325
+grid flat_640x480 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect flat_640x480 q=2 d=6 n=0 cbf29ce484222325
+grid flat_640x480 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect flat_640x480 q=inf d=6 n=0 cbf29ce484222325
+grid flat_640x480 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect example2 q=0 d=0 n=14750 a9986fa8da5aeee2
 detect example2 q=0 d=1 n=14750 a9986fa8da5aeee2
 detect example2 q=0 d=6 n=4182 2eddd28bb5993f5d
@@ -184,6 +224,14 @@ grid example2 6x4 b=5 e=0 n=97 df8b1399d313164b
 grid example2 6x4 b=5 e=6 n=92 96791163ec400bab
 grid example2 3x2 b=1 e=0 n=6 5fdbe9cb1c0d3101
 grid example2 3x2 b=1 e=6 n=5 5cb30c55426120a0
+detect example2 q=NaN d=6 n=0 cbf29ce484222325
+grid example2 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect example2 q=-1 d=6 n=4182 2eddd28bb5993f5d
+grid example2 6x4 b=5 e=6 q=-1 n=114 40eb20fbcfc653ec
+detect example2 q=2 d=6 n=0 cbf29ce484222325
+grid example2 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect example2 q=inf d=6 n=0 cbf29ce484222325
+grid example2 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_3x3 q=0 d=0 n=0 cbf29ce484222325
 detect noise_3x3 q=0 d=1 n=0 cbf29ce484222325
 detect noise_3x3 q=0 d=6 n=0 cbf29ce484222325
@@ -215,6 +263,14 @@ grid noise_3x3 6x4 b=5 e=0 n=0 cbf29ce484222325
 grid noise_3x3 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid noise_3x3 3x2 b=1 e=0 n=0 cbf29ce484222325
 grid noise_3x3 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_3x3 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_3x3 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_3x3 q=-1 d=6 n=0 cbf29ce484222325
+grid noise_3x3 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect noise_3x3 q=2 d=6 n=0 cbf29ce484222325
+grid noise_3x3 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_3x3 q=inf d=6 n=0 cbf29ce484222325
+grid noise_3x3 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_4x5 q=0 d=0 n=1 73d2a0ca0e600511
 detect noise_4x5 q=0 d=1 n=1 73d2a0ca0e600511
 detect noise_4x5 q=0 d=6 n=1 73d2a0ca0e600511
@@ -246,6 +302,14 @@ grid noise_4x5 6x4 b=5 e=0 n=1 73d2a0ca0e600511
 grid noise_4x5 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid noise_4x5 3x2 b=1 e=0 n=1 73d2a0ca0e600511
 grid noise_4x5 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_4x5 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_4x5 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_4x5 q=-1 d=6 n=1 73d2a0ca0e600511
+grid noise_4x5 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect noise_4x5 q=2 d=6 n=0 cbf29ce484222325
+grid noise_4x5 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_4x5 q=inf d=6 n=0 cbf29ce484222325
+grid noise_4x5 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_5x4 q=0 d=0 n=1 d0d82d2271cc8778
 detect noise_5x4 q=0 d=1 n=1 d0d82d2271cc8778
 detect noise_5x4 q=0 d=6 n=1 d0d82d2271cc8778
@@ -277,6 +341,14 @@ grid noise_5x4 6x4 b=5 e=0 n=1 d0d82d2271cc8778
 grid noise_5x4 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid noise_5x4 3x2 b=1 e=0 n=1 d0d82d2271cc8778
 grid noise_5x4 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_5x4 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_5x4 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_5x4 q=-1 d=6 n=1 d0d82d2271cc8778
+grid noise_5x4 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect noise_5x4 q=2 d=6 n=0 cbf29ce484222325
+grid noise_5x4 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_5x4 q=inf d=6 n=0 cbf29ce484222325
+grid noise_5x4 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_7x3 q=0 d=0 n=0 cbf29ce484222325
 detect noise_7x3 q=0 d=1 n=0 cbf29ce484222325
 detect noise_7x3 q=0 d=6 n=0 cbf29ce484222325
@@ -308,6 +380,14 @@ grid noise_7x3 6x4 b=5 e=0 n=0 cbf29ce484222325
 grid noise_7x3 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid noise_7x3 3x2 b=1 e=0 n=0 cbf29ce484222325
 grid noise_7x3 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_7x3 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_7x3 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_7x3 q=-1 d=6 n=0 cbf29ce484222325
+grid noise_7x3 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect noise_7x3 q=2 d=6 n=0 cbf29ce484222325
+grid noise_7x3 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_7x3 q=inf d=6 n=0 cbf29ce484222325
+grid noise_7x3 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_3x9 q=0 d=0 n=0 cbf29ce484222325
 detect noise_3x9 q=0 d=1 n=0 cbf29ce484222325
 detect noise_3x9 q=0 d=6 n=0 cbf29ce484222325
@@ -339,6 +419,14 @@ grid noise_3x9 6x4 b=5 e=0 n=0 cbf29ce484222325
 grid noise_3x9 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid noise_3x9 3x2 b=1 e=0 n=0 cbf29ce484222325
 grid noise_3x9 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_3x9 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_3x9 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_3x9 q=-1 d=6 n=0 cbf29ce484222325
+grid noise_3x9 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect noise_3x9 q=2 d=6 n=0 cbf29ce484222325
+grid noise_3x9 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_3x9 q=inf d=6 n=0 cbf29ce484222325
+grid noise_3x9 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_17x19 q=0 d=0 n=19 5c8a8635614b1d20
 detect noise_17x19 q=0 d=1 n=19 5c8a8635614b1d20
 detect noise_17x19 q=0 d=6 n=5 f4c12f1d60983cc4
@@ -370,6 +458,14 @@ grid noise_17x19 6x4 b=5 e=0 n=5 f4c12f1d60983cc4
 grid noise_17x19 6x4 b=5 e=6 n=1 71b377b3305a34b5
 grid noise_17x19 3x2 b=1 e=0 n=5 f4c12f1d60983cc4
 grid noise_17x19 3x2 b=1 e=6 n=1 71b377b3305a34b5
+detect noise_17x19 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_17x19 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_17x19 q=-1 d=6 n=5 f4c12f1d60983cc4
+grid noise_17x19 6x4 b=5 e=6 q=-1 n=1 71b377b3305a34b5
+detect noise_17x19 q=2 d=6 n=0 cbf29ce484222325
+grid noise_17x19 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_17x19 q=inf d=6 n=0 cbf29ce484222325
+grid noise_17x19 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_33x1 q=0 d=0 n=0 cbf29ce484222325
 detect noise_33x1 q=0 d=1 n=0 cbf29ce484222325
 detect noise_33x1 q=0 d=6 n=0 cbf29ce484222325
@@ -401,6 +497,14 @@ grid noise_33x1 6x4 b=5 e=0 n=0 cbf29ce484222325
 grid noise_33x1 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid noise_33x1 3x2 b=1 e=0 n=0 cbf29ce484222325
 grid noise_33x1 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_33x1 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_33x1 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_33x1 q=-1 d=6 n=0 cbf29ce484222325
+grid noise_33x1 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect noise_33x1 q=2 d=6 n=0 cbf29ce484222325
+grid noise_33x1 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_33x1 q=inf d=6 n=0 cbf29ce484222325
+grid noise_33x1 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_1x33 q=0 d=0 n=0 cbf29ce484222325
 detect noise_1x33 q=0 d=1 n=0 cbf29ce484222325
 detect noise_1x33 q=0 d=6 n=0 cbf29ce484222325
@@ -432,6 +536,14 @@ grid noise_1x33 6x4 b=5 e=0 n=0 cbf29ce484222325
 grid noise_1x33 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid noise_1x33 3x2 b=1 e=0 n=0 cbf29ce484222325
 grid noise_1x33 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_1x33 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_1x33 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_1x33 q=-1 d=6 n=0 cbf29ce484222325
+grid noise_1x33 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect noise_1x33 q=2 d=6 n=0 cbf29ce484222325
+grid noise_1x33 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_1x33 q=inf d=6 n=0 cbf29ce484222325
+grid noise_1x33 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_2x2 q=0 d=0 n=0 cbf29ce484222325
 detect noise_2x2 q=0 d=1 n=0 cbf29ce484222325
 detect noise_2x2 q=0 d=6 n=0 cbf29ce484222325
@@ -463,6 +575,14 @@ grid noise_2x2 6x4 b=5 e=0 n=0 cbf29ce484222325
 grid noise_2x2 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid noise_2x2 3x2 b=1 e=0 n=0 cbf29ce484222325
 grid noise_2x2 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect noise_2x2 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_2x2 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_2x2 q=-1 d=6 n=0 cbf29ce484222325
+grid noise_2x2 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect noise_2x2 q=2 d=6 n=0 cbf29ce484222325
+grid noise_2x2 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_2x2 q=inf d=6 n=0 cbf29ce484222325
+grid noise_2x2 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_65x49 q=0 d=0 n=197 7a061974801df7f7
 detect noise_65x49 q=0 d=1 n=197 7a061974801df7f7
 detect noise_65x49 q=0 d=6 n=50 58427ea63d6c0871
@@ -494,6 +614,14 @@ grid noise_65x49 6x4 b=5 e=0 n=50 58427ea63d6c0871
 grid noise_65x49 6x4 b=5 e=6 n=45 c87445b174f48600
 grid noise_65x49 3x2 b=1 e=0 n=6 1072a3c0ca29c1e3
 grid noise_65x49 3x2 b=1 e=6 n=2 7230b5b5501d7863
+detect noise_65x49 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_65x49 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_65x49 q=-1 d=6 n=50 58427ea63d6c0871
+grid noise_65x49 6x4 b=5 e=6 q=-1 n=45 c87445b174f48600
+detect noise_65x49 q=2 d=6 n=0 cbf29ce484222325
+grid noise_65x49 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_65x49 q=inf d=6 n=0 cbf29ce484222325
+grid noise_65x49 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect noise_127x61 q=0 d=0 n=496 6a464fa9b356935b
 detect noise_127x61 q=0 d=1 n=496 6a464fa9b356935b
 detect noise_127x61 q=0 d=6 n=118 5f911e3da5ca0f4e
@@ -525,6 +653,14 @@ grid noise_127x61 6x4 b=5 e=0 n=114 e2dd6974025eccaa
 grid noise_127x61 6x4 b=5 e=6 n=106 6922cd99fd445c5e
 grid noise_127x61 3x2 b=1 e=0 n=6 504adcf6780c8308
 grid noise_127x61 3x2 b=1 e=6 n=2 49aa031d0570d961
+detect noise_127x61 q=NaN d=6 n=0 cbf29ce484222325
+grid noise_127x61 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect noise_127x61 q=-1 d=6 n=118 5f911e3da5ca0f4e
+grid noise_127x61 6x4 b=5 e=6 q=-1 n=106 6922cd99fd445c5e
+detect noise_127x61 q=2 d=6 n=0 cbf29ce484222325
+grid noise_127x61 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect noise_127x61 q=inf d=6 n=0 cbf29ce484222325
+grid noise_127x61 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect checker_1 q=0 d=0 n=4 d5f0320a76329bfd
 detect checker_1 q=0 d=1 n=4 d5f0320a76329bfd
 detect checker_1 q=0 d=6 n=1 0a833ed437a7a979
@@ -556,6 +692,14 @@ grid checker_1 6x4 b=5 e=0 n=1 0a833ed437a7a979
 grid checker_1 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid checker_1 3x2 b=1 e=0 n=1 0a833ed437a7a979
 grid checker_1 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_1 q=NaN d=6 n=0 cbf29ce484222325
+grid checker_1 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect checker_1 q=-1 d=6 n=1 0a833ed437a7a979
+grid checker_1 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect checker_1 q=2 d=6 n=0 cbf29ce484222325
+grid checker_1 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect checker_1 q=inf d=6 n=0 cbf29ce484222325
+grid checker_1 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect checker_2 q=0 d=0 n=4 c9c08b8e38f55f2d
 detect checker_2 q=0 d=1 n=4 c9c08b8e38f55f2d
 detect checker_2 q=0 d=6 n=1 0a833bd437a7a460
@@ -587,6 +731,14 @@ grid checker_2 6x4 b=5 e=0 n=1 0a833bd437a7a460
 grid checker_2 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid checker_2 3x2 b=1 e=0 n=1 0a833bd437a7a460
 grid checker_2 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_2 q=NaN d=6 n=0 cbf29ce484222325
+grid checker_2 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect checker_2 q=-1 d=6 n=1 0a833bd437a7a460
+grid checker_2 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect checker_2 q=2 d=6 n=0 cbf29ce484222325
+grid checker_2 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect checker_2 q=inf d=6 n=0 cbf29ce484222325
+grid checker_2 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect checker_7 q=0 d=0 n=4 80051ab79ea07e79
 detect checker_7 q=0 d=1 n=4 80051ab79ea07e79
 detect checker_7 q=0 d=6 n=1 b88bbfd1c6035333
@@ -618,6 +770,14 @@ grid checker_7 6x4 b=5 e=0 n=1 b88bbfd1c6035333
 grid checker_7 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid checker_7 3x2 b=1 e=0 n=1 b88bbfd1c6035333
 grid checker_7 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_7 q=NaN d=6 n=0 cbf29ce484222325
+grid checker_7 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect checker_7 q=-1 d=6 n=1 b88bbfd1c6035333
+grid checker_7 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect checker_7 q=2 d=6 n=0 cbf29ce484222325
+grid checker_7 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect checker_7 q=inf d=6 n=0 cbf29ce484222325
+grid checker_7 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect checker_64 q=0 d=0 n=4 f74de08401ccd771
 detect checker_64 q=0 d=1 n=4 f74de08401ccd771
 detect checker_64 q=0 d=6 n=1 0a8378d437a80c07
@@ -649,6 +809,14 @@ grid checker_64 6x4 b=5 e=0 n=1 0a8378d437a80c07
 grid checker_64 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid checker_64 3x2 b=1 e=0 n=1 0a8378d437a80c07
 grid checker_64 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_64 q=NaN d=6 n=0 cbf29ce484222325
+grid checker_64 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect checker_64 q=-1 d=6 n=1 0a8378d437a80c07
+grid checker_64 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect checker_64 q=2 d=6 n=0 cbf29ce484222325
+grid checker_64 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect checker_64 q=inf d=6 n=0 cbf29ce484222325
+grid checker_64 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect checker_255 q=0 d=0 n=4 d7fc3c374b45006d
 detect checker_255 q=0 d=1 n=4 d7fc3c374b45006d
 detect checker_255 q=0 d=6 n=1 9cf0b05aca40e319
@@ -680,6 +848,14 @@ grid checker_255 6x4 b=5 e=0 n=1 9cf0b05aca40e319
 grid checker_255 6x4 b=5 e=6 n=0 cbf29ce484222325
 grid checker_255 3x2 b=1 e=0 n=1 9cf0b05aca40e319
 grid checker_255 3x2 b=1 e=6 n=0 cbf29ce484222325
+detect checker_255 q=NaN d=6 n=0 cbf29ce484222325
+grid checker_255 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect checker_255 q=-1 d=6 n=1 9cf0b05aca40e319
+grid checker_255 6x4 b=5 e=6 q=-1 n=0 cbf29ce484222325
+detect checker_255 q=2 d=6 n=0 cbf29ce484222325
+grid checker_255 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect checker_255 q=inf d=6 n=0 cbf29ce484222325
+grid checker_255 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect binary_noise q=0 d=0 n=196 fd9698e22928733a
 detect binary_noise q=0 d=1 n=196 fd9698e22928733a
 detect binary_noise q=0 d=6 n=47 8a584b2303ed659f
@@ -711,6 +887,14 @@ grid binary_noise 6x4 b=5 e=0 n=47 8a584b2303ed659f
 grid binary_noise 6x4 b=5 e=6 n=43 f1a119f1a499af2c
 grid binary_noise 3x2 b=1 e=0 n=6 2afeaed9ef244250
 grid binary_noise 3x2 b=1 e=6 n=2 9605057134c9124a
+detect binary_noise q=NaN d=6 n=0 cbf29ce484222325
+grid binary_noise 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect binary_noise q=-1 d=6 n=47 8a584b2303ed659f
+grid binary_noise 6x4 b=5 e=6 q=-1 n=43 f1a119f1a499af2c
+detect binary_noise q=2 d=6 n=0 cbf29ce484222325
+grid binary_noise 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect binary_noise q=inf d=6 n=0 cbf29ce484222325
+grid binary_noise 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 detect border_max q=0 d=0 n=144 e4df1673cd289b69
 detect border_max q=0 d=1 n=144 e4df1673cd289b69
 detect border_max q=0 d=6 n=22 8eb0d162eb58ba6e
@@ -742,6 +926,14 @@ grid border_max 6x4 b=5 e=0 n=22 8eb0d162eb58ba6e
 grid border_max 6x4 b=5 e=6 n=16 6509c401e38fc0ff
 grid border_max 3x2 b=1 e=0 n=6 b63defde51e11369
 grid border_max 3x2 b=1 e=6 n=2 cc8a0dbb8927a534
+detect border_max q=NaN d=6 n=0 cbf29ce484222325
+grid border_max 6x4 b=5 e=6 q=NaN n=0 cbf29ce484222325
+detect border_max q=-1 d=6 n=22 8eb0d162eb58ba6e
+grid border_max 6x4 b=5 e=6 q=-1 n=16 6509c401e38fc0ff
+detect border_max q=2 d=6 n=0 cbf29ce484222325
+grid border_max 6x4 b=5 e=6 q=2 n=0 cbf29ce484222325
+detect border_max q=inf d=6 n=0 cbf29ce484222325
+grid border_max 6x4 b=5 e=6 q=inf n=0 cbf29ce484222325
 track s=(0.4,-0.3) l=1 w=7 i=10 n=108 tracked=89 e7b7e78c8ac8236b
 track_guess s=(0.4,-0.3) l=1 w=7 i=10 n=108 tracked=89 756dce81e31d3c89
 track_fb s=(0.4,-0.3) l=1 w=7 i=10 n=108 tracked=88 6debbf716d53a31f
