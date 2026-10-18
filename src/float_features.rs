@@ -1,7 +1,4 @@
-use crate::features::{
-    DetectorCapacity, GridLayout, Planes, Selection, local_maxima, min_eigenvalue_scores,
-    quality_floor, sort_by_score,
-};
+use crate::features::{Detector, DetectorCapacity, DetectorImage, GridLayout, Threshold};
 use crate::float_image::FloatImageView;
 use crate::utils::float_gradients::scharr_f32_into;
 
@@ -29,6 +26,7 @@ impl ScoreThreshold {
     ///
     /// # Panics
     /// Panics if `min_score` is negative, NaN or infinite.
+    #[must_use]
     pub fn absolute(min_score: f32) -> Self {
         assert!(
             min_score.is_finite() && min_score >= 0.0,
@@ -45,6 +43,7 @@ impl ScoreThreshold {
     ///
     /// # Panics
     /// Panics unless `0 <= quality_level <= 1`.
+    #[must_use]
     pub fn with_relative(self, quality_level: f32) -> Self {
         assert!(
             (0.0..=1.0).contains(&quality_level),
@@ -66,9 +65,11 @@ impl ScoreThreshold {
         self.relative
     }
 
-    /// The effective threshold for a strongest local maximum of `strongest`.
-    fn effective(&self, strongest: f32) -> f32 {
-        self.absolute.max(self.relative * strongest)
+    fn threshold(self) -> Threshold {
+        Threshold {
+            absolute: self.absolute,
+            relative: self.relative,
+        }
     }
 }
 
@@ -98,8 +99,7 @@ impl ScoreThreshold {
 /// allocation, whatever the image content.
 #[derive(Default)]
 pub struct FloatDetectorContext {
-    planes: Planes<f64>,
-    selection: Selection,
+    detector: Detector<f64>,
 }
 
 impl FloatDetectorContext {
@@ -119,8 +119,7 @@ impl FloatDetectorContext {
     /// Allocates every buffer for `capacity` now, so that later calls within
     /// it do not allocate. Existing capacity is kept.
     pub fn reserve(&mut self, capacity: DetectorCapacity) {
-        self.planes.reserve(&capacity);
-        self.selection.reserve(&capacity);
+        self.detector.reserve(&capacity);
     }
 
     /// Detects corners scoring at least `threshold`, at least `min_distance`
@@ -135,10 +134,8 @@ impl FloatDetectorContext {
         threshold: ScoreThreshold,
         min_distance: u32,
     ) -> &[(u32, u32, f32)] {
-        self.detect_candidates(image, threshold);
-        let (width, height) = image.dimensions();
-        self.selection
-            .spaced(&self.planes.candidates, min_distance, width, height)
+        self.detector
+            .detect(image, threshold.threshold(), min_distance)
     }
 
     /// Detects up to `max_per_cell` corners per cell of a `grid_cols` x
@@ -159,171 +156,71 @@ impl FloatDetectorContext {
         min_distance: u32,
         existing_points: &[(f32, f32)],
     ) -> &[(u32, u32, f32)] {
-        let grid = GridLayout::new(grid_cols, grid_rows, max_per_cell);
-        if max_per_cell == 0 {
-            return self.selection.clear();
-        }
-        self.detect_candidates(image, threshold);
-        let (width, height) = image.dimensions();
-        self.selection.grid(
-            &self.planes.candidates,
-            width,
-            height,
-            grid,
+        self.detector.detect_grid(
+            image,
+            GridLayout::new(grid_cols, grid_rows, max_per_cell),
+            threshold.threshold(),
             min_distance,
             existing_points,
         )
     }
+}
 
-    /// Candidates passing `threshold`, sorted, before spacing.
-    fn detect_candidates(&mut self, image: FloatImageView<'_>, threshold: ScoreThreshold) {
-        self.planes.candidates.clear();
-        if image.width() < 3 || image.height() < 3 {
-            return;
-        }
-        run(&mut self.planes, image, threshold);
-        let candidates = &mut self.planes.candidates;
-        let strongest = candidates.iter().fold(0.0f32, |max, p| max.max(p.2));
-        let threshold = threshold.effective(strongest);
-        candidates.retain(|&(_, _, score)| score >= threshold);
-        sort_by_score(candidates);
+impl DetectorImage for FloatImageView<'_> {
+    type Sum = f64;
+
+    fn dimensions(self) -> (u32, u32) {
+        (self.width(), self.height())
     }
-}
 
-/// Gradients, structure tensor, scores and non-maximum suppression, leaving
-/// the local maxima that can pass `threshold` in row-major order. On x86 an
-/// AVX2 copy is selected at runtime.
-fn run(planes: &mut Planes<f64>, image: FloatImageView<'_>, threshold: ScoreThreshold) {
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    if is_x86_feature_detected!("avx2") {
-        // SAFETY: guarded by the runtime feature check.
-        return unsafe { run_avx2(planes, image, threshold) };
+    #[inline(always)]
+    fn gradients_into(self, grad_x: &mut [f32], grad_y: &mut [f32]) {
+        let (width, height) = (self.width() as usize, self.height() as usize);
+        scharr_f32_into(self.pixels(), width, height, grad_x, grad_y);
     }
-    run_impl(planes, image, threshold)
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[target_feature(enable = "avx2")]
-unsafe fn run_avx2(planes: &mut Planes<f64>, image: FloatImageView<'_>, threshold: ScoreThreshold) {
-    run_impl(planes, image, threshold)
-}
-
-#[inline(always)]
-fn run_impl(p: &mut Planes<f64>, image: FloatImageView<'_>, threshold: ScoreThreshold) {
-    let (w, h) = (image.width() as usize, image.height() as usize);
-    let n = w * h;
-    p.grad_x.resize(n, 0.0);
-    p.grad_y.resize(n, 0.0);
-    p.scores.resize(n, 0.0);
-
-    scharr_f32_into(image.pixels(), w, h, &mut p.grad_x, &mut p.grad_y);
-    min_eigenvalue_scores(&p.grad_x, &p.grad_y, w, &mut p.tensor, &mut p.scores);
-    // The relative part needs the strongest score, which costs a pass.
-    let relative_floor = if threshold.relative > 0.0 {
-        quality_floor(&p.scores, w, h, threshold.relative)
-    } else {
-        0.0
-    };
-    let floor = threshold.absolute.max(relative_floor);
-    local_maxima(
-        &p.scores,
-        w,
-        h,
-        floor,
-        &mut p.maxima_rows,
-        &mut p.candidates,
-    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::TensorSum;
 
     #[test]
-    fn threshold_combines_absolute_and_relative_parts() {
+    fn threshold_passes_both_parts_to_the_detector() {
         let absolute = ScoreThreshold::absolute(2.0);
         assert_eq!(absolute.relative_part(), 0.0);
-        assert_eq!(absolute.effective(100.0), 2.0);
         let both = absolute.with_relative(0.1);
-        assert_eq!(both.effective(100.0), 10.0);
-        assert_eq!(both.effective(5.0), 2.0);
+        assert_eq!((both.absolute_part(), both.relative_part()), (2.0, 0.1));
         assert_eq!(
-            ScoreThreshold::absolute(0.0)
-                .with_relative(1.0)
-                .effective(3.0),
-            3.0
+            both.threshold(),
+            Threshold {
+                absolute: 2.0,
+                relative: 0.1
+            }
         );
     }
 
     #[test]
     #[should_panic(expected = "finite and non-negative")]
     fn negative_absolute_threshold_panics() {
-        ScoreThreshold::absolute(-1e-9);
+        let _ = ScoreThreshold::absolute(-1e-9);
     }
 
     #[test]
     #[should_panic(expected = "finite and non-negative")]
     fn nan_absolute_threshold_panics() {
-        ScoreThreshold::absolute(f32::NAN);
+        let _ = ScoreThreshold::absolute(f32::NAN);
     }
 
     #[test]
     #[should_panic(expected = "within 0..=1")]
     fn relative_threshold_above_one_panics() {
-        ScoreThreshold::absolute(0.0).with_relative(1.5);
+        let _ = ScoreThreshold::absolute(0.0).with_relative(1.5);
     }
 
     #[test]
     #[should_panic(expected = "within 0..=1")]
     fn nan_relative_threshold_panics() {
-        ScoreThreshold::absolute(0.0).with_relative(f32::NAN);
-    }
-
-    /// Minimum eigenvalue of a window tensor in f64 throughout.
-    fn reference(a: f64, b: f64, c: f64) -> f64 {
-        let determinant = a * b - c * c;
-        let largest = (a + b + ((a - b).powi(2) + 4.0 * c * c).sqrt()) / 2.0;
-        if determinant > 0.0 {
-            determinant / largest
-        } else {
-            0.0
-        }
-    }
-
-    #[test]
-    fn f64_tensor_scores_match_reference_for_real_valued_gradients() {
-        let mut state = 0x2545_f491u32;
-        let mut next = || {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            state as f32 / u32::MAX as f32 * 2.0 - 1.0
-        };
-        // Gradient magnitudes from tiny physical slopes to the largest
-        // permitted ones, with nearly collinear windows. Below about 1e-6,
-        // nearly collinear windows lose precision once the determinant is a
-        // subnormal f32; their scores are then negligible anyway.
-        for scale in [1e-6f32, 1e-3, 0.37, 41.0, 5e8] {
-            for collinear in [false, true] {
-                let (dx, dy) = (next(), next());
-                let (mut a, mut b, mut c) = (0.0f64, 0.0f64, 0.0f64);
-                for _ in 0..9 {
-                    let jitter = if collinear { 1e-3 } else { 1.0 };
-                    let t = next();
-                    let gx = (t * dx + next() * jitter) * scale;
-                    let gy = (t * dy + next() * jitter) * scale;
-                    let (xx, yy, xy) = <f64 as TensorSum>::products(gx, gy);
-                    (a, b, c) = (a + xx, b + yy, c + xy);
-                }
-                let score = <f64 as TensorSum>::scaled_min_eigenvalue(a, b, c, 1.0);
-                let expected = reference(a, b, c);
-                assert!(
-                    (score as f64 - expected).abs() <= expected * 1e-5,
-                    "scale {scale}, collinear {collinear}: {score} vs {expected}"
-                );
-            }
-        }
+        let _ = ScoreThreshold::absolute(0.0).with_relative(f32::NAN);
     }
 
     #[test]
@@ -354,8 +251,8 @@ mod tests {
             context.detect(view, ScoreThreshold::absolute(0.0), 0);
             assert!(
                 context
-                    .planes
-                    .scores
+                    .detector
+                    .scores()
                     .iter()
                     .all(|s| s.is_finite() && *s >= 0.0)
             );

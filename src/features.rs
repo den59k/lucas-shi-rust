@@ -1,4 +1,4 @@
-use image::GrayImage;
+use image::{GrayImage, ImageBuffer};
 use std::cmp::Ordering;
 
 use crate::utils::{
@@ -32,7 +32,7 @@ pub fn good_features_to_track(
 ) -> Vec<(u32, u32, f32)> {
     let mut ctx = DetectorContext::new();
     ctx.detect(image, quality_level, min_distance);
-    std::mem::take(&mut ctx.selection.results)
+    ctx.detector.take_results()
 }
 
 /// Finds good feature points with uniform frame coverage by detecting per grid
@@ -82,7 +82,7 @@ pub fn good_features_to_track_grid(
         min_distance,
         existing_points,
     );
-    std::mem::take(&mut ctx.selection.results)
+    ctx.detector.take_results()
 }
 
 /// Upper bounds for the work a detector context will see, used to allocate
@@ -147,8 +147,7 @@ pub(crate) fn reserve_total<T>(buffer: &mut Vec<T>, total: usize) {
 /// create a context per call.
 #[derive(Default)]
 pub struct DetectorContext {
-    planes: Planes<i32>,
-    selection: Selection,
+    detector: Detector<i32>,
 }
 
 impl DetectorContext {
@@ -168,8 +167,7 @@ impl DetectorContext {
     /// Allocates every buffer for `capacity` now, so that later calls within
     /// it do not allocate. Existing capacity is kept.
     pub fn reserve(&mut self, capacity: DetectorCapacity) {
-        self.planes.reserve(&capacity);
-        self.selection.reserve(&capacity);
+        self.detector.reserve(&capacity);
     }
 
     /// Detects corners as [`good_features_to_track`] does, returning them from
@@ -180,10 +178,8 @@ impl DetectorContext {
         quality_level: f32,
         min_distance: u32,
     ) -> &[(u32, u32, f32)] {
-        self.detect_candidates(image, quality_level);
-        let (width, height) = image.dimensions();
-        self.selection
-            .spaced(&self.planes.candidates, min_distance, width, height)
+        self.detector
+            .detect(image, Threshold::relative(quality_level), min_distance)
     }
 
     /// Detects corners per grid cell as [`good_features_to_track_grid`] does,
@@ -200,11 +196,122 @@ impl DetectorContext {
         min_distance: u32,
         existing_points: &[(f32, f32)],
     ) -> &[(u32, u32, f32)] {
-        let grid = GridLayout::new(grid_cols, grid_rows, max_per_cell);
-        if max_per_cell == 0 {
+        self.detector.detect_grid(
+            image,
+            GridLayout::new(grid_cols, grid_rows, max_per_cell),
+            Threshold::relative(quality_level),
+            min_distance,
+            existing_points,
+        )
+    }
+}
+
+/// An image the detector runs on: its size and its Scharr gradients, whose
+/// products the structure tensor sums in `Sum`.
+pub(crate) trait DetectorImage: Copy {
+    type Sum: TensorSum;
+
+    fn dimensions(self) -> (u32, u32);
+
+    /// Scharr gradients, 32 times the slope per pixel, zero on the border.
+    fn gradients_into(
+        self,
+        grad_x: &mut [<Self::Sum as TensorSum>::Gradient],
+        grad_y: &mut [<Self::Sum as TensorSum>::Gradient],
+    );
+}
+
+impl DetectorImage for &GrayImage {
+    type Sum = i32;
+
+    fn dimensions(self) -> (u32, u32) {
+        ImageBuffer::dimensions(self)
+    }
+
+    fn gradients_into(self, grad_x: &mut [i16], grad_y: &mut [i16]) {
+        compute_gradients_into(self, grad_x, grad_y);
+    }
+}
+
+/// Which local maxima a detection keeps: those scoring at least `absolute`
+/// and at least `relative` times the strongest local maximum of the image.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Threshold {
+    pub(crate) absolute: f32,
+    pub(crate) relative: f32,
+}
+
+impl Threshold {
+    /// The 8-bit detector's `quality_level`, unvalidated as it always was.
+    fn relative(quality_level: f32) -> Self {
+        Self {
+            absolute: 0.0,
+            relative: quality_level,
+        }
+    }
+
+    /// A score below which no pixel can pass, so NMS may skip it. The
+    /// relative part costs a pass over the scores, saved when it is disabled.
+    #[inline(always)]
+    fn floor(&self, scores: &[f32], width: usize, height: usize) -> f32 {
+        let relative = if self.relative > 0.0 {
+            quality_floor(scores, width, height, self.relative)
+        } else {
+            0.0
+        };
+        self.absolute.max(relative)
+    }
+
+    /// Whether a local maximum scoring `score` passes, given the strongest.
+    fn keeps(&self, score: f32, strongest: f32) -> bool {
+        // Two comparisons rather than one against the larger bound, so that a
+        // NaN quality level keeps nothing, as it always did.
+        score >= self.absolute && score >= self.relative * strongest
+    }
+}
+
+/// The detector pipeline with every buffer it touches, for tensor sums of
+/// type `T`: the core of [`DetectorContext`] and of the f32 detector.
+#[derive(Default)]
+pub(crate) struct Detector<T: TensorSum> {
+    planes: Planes<T>,
+    selection: Selection,
+}
+
+impl<T: TensorSum> Detector<T> {
+    pub(crate) fn reserve(&mut self, capacity: &DetectorCapacity) {
+        self.planes.reserve(capacity);
+        self.selection.reserve(capacity);
+    }
+
+    /// Corners passing `threshold`, greedily at least `min_distance` apart,
+    /// from the result buffer.
+    pub(crate) fn detect<I: DetectorImage<Sum = T>>(
+        &mut self,
+        image: I,
+        threshold: Threshold,
+        min_distance: u32,
+    ) -> &[(u32, u32, f32)] {
+        self.detect_candidates(image, threshold);
+        let (width, height) = image.dimensions();
+        self.selection
+            .spaced(&self.planes.candidates, min_distance, width, height)
+    }
+
+    /// Corners per grid cell, see [`DetectorContext::detect_grid`], from the
+    /// result buffer.
+    pub(crate) fn detect_grid<I: DetectorImage<Sum = T>>(
+        &mut self,
+        image: I,
+        grid: GridLayout,
+        threshold: Threshold,
+        min_distance: u32,
+        existing_points: &[(f32, f32)],
+    ) -> &[(u32, u32, f32)] {
+        if grid.max_per_cell == 0 {
             return self.selection.clear();
         }
-        self.detect_candidates(image, quality_level);
+        self.detect_candidates(image, threshold);
         let (width, height) = image.dimensions();
         self.selection.grid(
             &self.planes.candidates,
@@ -216,25 +323,37 @@ impl DetectorContext {
         )
     }
 
-    /// Runs the Shi-Tomasi pipeline, leaving candidate corners sorted by
-    /// descending quality in `self.planes.candidates`, before any spacing
-    /// constraint.
-    fn detect_candidates(&mut self, image: &GrayImage, quality_level: f32) {
+    /// Moves the result buffer out, for the allocating free functions.
+    pub(crate) fn take_results(&mut self) -> Vec<(u32, u32, f32)> {
+        std::mem::take(&mut self.selection.results)
+    }
+
+    /// The score plane of the last detection.
+    #[cfg(test)]
+    pub(crate) fn scores(&self) -> &[f32] {
+        &self.planes.scores
+    }
+
+    /// Runs the Shi-Tomasi pipeline, leaving the candidates that pass
+    /// `threshold` sorted by descending score in `self.planes.candidates`,
+    /// before any spacing constraint.
+    fn detect_candidates<I: DetectorImage<Sum = T>>(&mut self, image: I, threshold: Threshold) {
         self.planes.candidates.clear();
-        if image.width() < 3 || image.height() < 3 {
+        let (width, height) = image.dimensions();
+        if width < 3 || height < 3 {
             return;
         }
 
-        self.planes.run(image, quality_level);
+        self.planes.run(image, threshold);
         let candidates = &mut self.planes.candidates;
-        filter_by_quality(candidates, quality_level);
+        filter_by_threshold(candidates, threshold);
         sort_by_score(candidates);
     }
 }
 
 /// Descending score; ties keep row-major order, which is the order the
 /// candidates were collected in. The unstable sort does not allocate.
-pub(crate) fn sort_by_score(candidates: &mut [(u32, u32, f32)]) {
+fn sort_by_score(candidates: &mut [(u32, u32, f32)]) {
     candidates.sort_unstable_by(|a, b| {
         b.2.partial_cmp(&a.2)
             .unwrap_or(Ordering::Equal)
@@ -246,18 +365,18 @@ pub(crate) fn sort_by_score(candidates: &mut [(u32, u32, f32)]) {
 /// The per-pixel stages of a detector and their buffers, for tensor sums of
 /// type `T`.
 #[derive(Default)]
-pub(crate) struct Planes<T: TensorSum> {
-    pub(crate) grad_x: Vec<T::Gradient>,
-    pub(crate) grad_y: Vec<T::Gradient>,
-    pub(crate) tensor: TensorRows<T>,
-    pub(crate) scores: Vec<f32>,
+struct Planes<T: TensorSum> {
+    grad_x: Vec<T::Gradient>,
+    grad_y: Vec<T::Gradient>,
+    tensor: TensorRows<T>,
+    scores: Vec<f32>,
     /// Horizontal 3-pixel score maxima of rows y - 1, y and y + 1 for NMS.
-    pub(crate) maxima_rows: [Vec<f32>; 3],
-    pub(crate) candidates: Vec<(u32, u32, f32)>,
+    maxima_rows: [Vec<f32>; 3],
+    candidates: Vec<(u32, u32, f32)>,
 }
 
 impl<T: TensorSum> Planes<T> {
-    pub(crate) fn reserve(&mut self, capacity: &DetectorCapacity) {
+    fn reserve(&mut self, capacity: &DetectorCapacity) {
         let (width, pixels) = (capacity.width as usize, capacity.max_pixels());
         reserve_total(&mut self.grad_x, pixels);
         reserve_total(&mut self.grad_y, pixels);
@@ -268,42 +387,41 @@ impl<T: TensorSum> Planes<T> {
         }
         reserve_total(&mut self.candidates, capacity.max_candidates());
     }
-}
 
-impl Planes<i32> {
     /// Gradients, structure tensor, scores and non-maximum suppression. Leaves
-    /// the local maxima that can pass `quality_level` in `candidates`, in
+    /// the local maxima that can pass `threshold` in `candidates`, in
     /// row-major order. The image must be at least 3x3.
     ///
     /// The stages are plain loops compiled for the target's baseline (SSE2,
     /// NEON, `simd128`); on x86 an AVX2 copy is selected at runtime.
-    fn run(&mut self, image: &GrayImage, quality_level: f32) {
+    fn run<I: DetectorImage<Sum = T>>(&mut self, image: I, threshold: Threshold) {
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         if is_x86_feature_detected!("avx2") {
             // SAFETY: guarded by the runtime feature check.
-            return unsafe { run_avx2(self, image, quality_level) };
+            return unsafe { run_avx2(self, image, threshold) };
         }
-        run_impl(self, image, quality_level)
+        run_impl(self, image, threshold)
     }
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
-unsafe fn run_avx2(planes: &mut Planes<i32>, image: &GrayImage, quality_level: f32) {
-    run_impl(planes, image, quality_level)
+unsafe fn run_avx2<I: DetectorImage>(planes: &mut Planes<I::Sum>, image: I, threshold: Threshold) {
+    run_impl(planes, image, threshold)
 }
 
 #[inline(always)]
-fn run_impl(p: &mut Planes<i32>, image: &GrayImage, quality_level: f32) {
-    let (w, h) = (image.width() as usize, image.height() as usize);
+fn run_impl<I: DetectorImage>(p: &mut Planes<I::Sum>, image: I, threshold: Threshold) {
+    let (w, h) = image.dimensions();
+    let (w, h) = (w as usize, h as usize);
     let n = w * h;
-    p.grad_x.resize(n, 0);
-    p.grad_y.resize(n, 0);
+    p.grad_x.resize(n, Default::default());
+    p.grad_y.resize(n, Default::default());
     p.scores.resize(n, 0.0);
 
-    compute_gradients_into(image, &mut p.grad_x, &mut p.grad_y);
+    image.gradients_into(&mut p.grad_x, &mut p.grad_y);
     min_eigenvalue_scores(&p.grad_x, &p.grad_y, w, &mut p.tensor, &mut p.scores);
-    let floor = quality_floor(&p.scores, w, h, quality_level);
+    let floor = threshold.floor(&p.scores, w, h);
     local_maxima(
         &p.scores,
         w,
@@ -314,11 +432,10 @@ fn run_impl(p: &mut Planes<i32>, image: &GrayImage, quality_level: f32) {
     );
 }
 
-/// Keeps candidates at or above `quality_level` times the strongest one.
-fn filter_by_quality(candidates: &mut Vec<(u32, u32, f32)>, quality_level: f32) {
-    let max_quality = candidates.iter().fold(0.0f32, |max, p| max.max(p.2));
-    let threshold = quality_level * max_quality;
-    candidates.retain(|&(_, _, q)| q >= threshold);
+/// Keeps the candidates that pass `threshold`, relative to the strongest one.
+fn filter_by_threshold(candidates: &mut Vec<(u32, u32, f32)>, threshold: Threshold) {
+    let strongest = candidates.iter().fold(0.0f32, |max, p| max.max(p.2));
+    candidates.retain(|&(_, _, score)| threshold.keeps(score, strongest));
 }
 
 /// Greedy minimum-distance filter over quality-sorted candidates, writing the
@@ -373,16 +490,16 @@ impl GridLayout {
 }
 
 /// Spacing and grid selection over score-sorted candidates, with the result
-/// buffer. Shared by the 8-bit and f32 detectors.
+/// buffer.
 #[derive(Default)]
-pub(crate) struct Selection {
-    pub(crate) results: Vec<(u32, u32, f32)>,
+struct Selection {
+    results: Vec<(u32, u32, f32)>,
     occupancy: OccupancyGrid,
     cell_count: Vec<u32>,
 }
 
 impl Selection {
-    pub(crate) fn reserve(&mut self, capacity: &DetectorCapacity) {
+    fn reserve(&mut self, capacity: &DetectorCapacity) {
         let spaced = capacity.max_spaced();
         reserve_total(&mut self.results, spaced);
         self.occupancy
@@ -390,13 +507,13 @@ impl Selection {
         reserve_total(&mut self.cell_count, capacity.grid_cells as usize);
     }
 
-    pub(crate) fn clear(&mut self) -> &[(u32, u32, f32)] {
+    fn clear(&mut self) -> &[(u32, u32, f32)] {
         self.results.clear();
         &self.results
     }
 
     /// Greedy minimum-distance selection, see [`enforce_spacing`].
-    pub(crate) fn spaced(
+    fn spaced(
         &mut self,
         candidates: &[(u32, u32, f32)],
         min_distance: u32,
@@ -415,7 +532,7 @@ impl Selection {
     }
 
     /// Per-cell selection for [`DetectorContext::detect_grid`].
-    pub(crate) fn grid(
+    fn grid(
         &mut self,
         candidates: &[(u32, u32, f32)],
         width: u32,
@@ -569,7 +686,7 @@ impl OccupancyGrid {
 /// exact i32 sums of i16 Scharr gradients for 8-bit images, f64 sums of f32
 /// gradients for f32 images. Products of two f32 values are exact in f64.
 pub(crate) trait TensorSum: Copy + Default {
-    type Gradient: Copy;
+    type Gradient: Copy + Default;
 
     /// `(gx * gx, gy * gy, gx * gy)`.
     fn products(gx: Self::Gradient, gy: Self::Gradient) -> (Self, Self, Self);
@@ -652,7 +769,7 @@ impl TensorSum for f64 {
 /// One image row of the structure tensor components `[[xx, xy], [xy, yy]]`:
 /// raw gradient products, or their horizontal or full 3x3 window sums.
 #[derive(Default)]
-pub(crate) struct TensorRow<T> {
+struct TensorRow<T> {
     xx: Vec<T>,
     yy: Vec<T>,
     xy: Vec<T>,
@@ -701,14 +818,14 @@ impl<T: TensorSum> TensorRow<T> {
 /// sums of rows y - 1, y and y + 1 (stored at row % 3), and the 3x3 window
 /// sums of row y.
 #[derive(Default)]
-pub(crate) struct TensorRows<T> {
+struct TensorRows<T> {
     products: TensorRow<T>,
     ring: [TensorRow<T>; 3],
     window: TensorRow<T>,
 }
 
 impl<T: TensorSum> TensorRows<T> {
-    pub(crate) fn reserve(&mut self, width: usize) {
+    fn reserve(&mut self, width: usize) {
         let Self {
             products,
             ring,
@@ -759,7 +876,7 @@ fn horizontal_tensor_row<T: TensorSum>(
 /// at a time, keeping only three horizontally summed rows instead of tensor
 /// planes.
 #[inline(always)]
-pub(crate) fn min_eigenvalue_scores<T: TensorSum>(
+fn min_eigenvalue_scores<T: TensorSum>(
     gx: &[T::Gradient],
     gy: &[T::Gradient],
     width: usize,
@@ -841,12 +958,7 @@ fn scaled_min_eigenvalue(a: i32, b: i32, c: i32, normalization: f32) -> f32 {
 /// never selects border pixels, so a maximum found only on the border does not;
 /// nothing beyond non-positive scores is skipped then.
 #[inline(always)]
-pub(crate) fn quality_floor(
-    scores: &[f32],
-    width: usize,
-    height: usize,
-    quality_level: f32,
-) -> f32 {
+fn quality_floor(scores: &[f32], width: usize, height: usize, quality_level: f32) -> f32 {
     let (mut interior, mut border) = (0.0f32, 0.0f32);
     for (y, row) in scores.chunks_exact(width).enumerate() {
         if y == 0 || y + 1 == height {
@@ -868,7 +980,7 @@ pub(crate) fn quality_floor(
 /// so plateaus survive; it equals the maximum of its 3x3 neighborhood, which is
 /// computed separably in `rows`.
 #[inline(always)]
-pub(crate) fn local_maxima(
+fn local_maxima(
     scores: &[f32],
     width: usize,
     height: usize,
@@ -1275,6 +1387,66 @@ mod tests {
                 ctx.detect_grid(&image, 4, 3, 3, 0.01, 6, &existing),
                 good_features_to_track_grid(&image, 4, 3, 3, 0.01, 6, &existing)
             );
+        }
+    }
+
+    #[test]
+    fn threshold_requires_both_parts() {
+        let both = Threshold {
+            absolute: 2.0,
+            relative: 0.1,
+        };
+        assert!(both.keeps(10.0, 100.0) && !both.keeps(9.9, 100.0));
+        assert!(both.keeps(2.0, 5.0) && !both.keeps(1.9, 5.0));
+        // 8-bit quality levels are not validated: NaN keeps nothing, a
+        // negative level every positive score.
+        assert!(!Threshold::relative(f32::NAN).keeps(1.0, 1.0));
+        assert!(Threshold::relative(-1.0).keeps(1e-30, 1.0));
+    }
+
+    /// Minimum eigenvalue of a window tensor in f64 throughout.
+    fn reference(a: f64, b: f64, c: f64) -> f64 {
+        let determinant = a * b - c * c;
+        let largest = (a + b + ((a - b).powi(2) + 4.0 * c * c).sqrt()) / 2.0;
+        if determinant > 0.0 {
+            determinant / largest
+        } else {
+            0.0
+        }
+    }
+
+    #[test]
+    fn f64_tensor_scores_match_reference_for_real_valued_gradients() {
+        let mut state = 0x2545_f491u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as f32 / u32::MAX as f32 * 2.0 - 1.0
+        };
+        // Gradient magnitudes from tiny physical slopes to the largest
+        // permitted ones, with nearly collinear windows. Below about 1e-6,
+        // nearly collinear windows lose precision once the determinant is a
+        // subnormal f32; their scores are then negligible anyway.
+        for scale in [1e-6f32, 1e-3, 0.37, 41.0, 5e8] {
+            for collinear in [false, true] {
+                let (dx, dy) = (next(), next());
+                let (mut a, mut b, mut c) = (0.0f64, 0.0f64, 0.0f64);
+                for _ in 0..9 {
+                    let jitter = if collinear { 1e-3 } else { 1.0 };
+                    let t = next();
+                    let gx = (t * dx + next() * jitter) * scale;
+                    let gy = (t * dy + next() * jitter) * scale;
+                    let (xx, yy, xy) = <f64 as TensorSum>::products(gx, gy);
+                    (a, b, c) = (a + xx, b + yy, c + xy);
+                }
+                let score = <f64 as TensorSum>::scaled_min_eigenvalue(a, b, c, 1.0);
+                let expected = reference(a, b, c);
+                assert!(
+                    (score as f64 - expected).abs() <= expected * 1e-5,
+                    "scale {scale}, collinear {collinear}: {score} vs {expected}"
+                );
+            }
         }
     }
 }

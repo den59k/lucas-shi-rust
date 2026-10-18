@@ -37,7 +37,7 @@ pub fn floored_nms(scores: &mut ScorePlane, w: u32, h: u32, q: f32) -> Vec<(u32,
 }
 
 pub fn quality(p: &mut Vec<(u32, u32, f32)>, q: f32) {
-    filter_by_quality(p, q);
+    filter_by_threshold(p, Threshold::relative(q));
 }
 
 pub fn spacing(p: &[(u32, u32, f32)], distance: u32, w: u32, h: u32) -> Vec<(u32, u32, f32)> {
