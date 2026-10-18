@@ -401,3 +401,26 @@ fn grid_detection_is_uniform_and_respects_occupancy() {
         "cell filled by existing_points must be skipped"
     );
 }
+
+#[test]
+#[should_panic(expected = "frames must have the same size")]
+fn context_frames_of_different_size_panic() {
+    TrackerContext::new().prepare(&GrayImage::new(40, 30), &GrayImage::new(30, 40), 2);
+}
+
+#[test]
+#[should_panic(expected = "same level sizes")]
+fn larger_next_pyramid_panics_instead_of_misreading_it() {
+    // A larger next frame used to be read with the previous frame's width.
+    let prev = build_pyramid(&textured(64, 48), 2);
+    let next = build_pyramid(&textured(80, 48), 2);
+    calc_optical_flow_ex(
+        &prev,
+        &next,
+        &[(30.0, 20.0)],
+        None,
+        WIN,
+        ITERS,
+        DEFAULT_MIN_EIGEN_THRESHOLD,
+    );
+}

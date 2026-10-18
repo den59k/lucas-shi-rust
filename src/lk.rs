@@ -138,7 +138,8 @@ pub fn calc_optical_flow(
 ///   See [`DEFAULT_MIN_EIGEN_THRESHOLD`].
 ///
 /// # Panics
-/// Panics if `predicted` is `Some` but its length differs from `prev_points`.
+/// Panics if the pyramids differ in level count or level sizes, or if
+/// `predicted` is `Some` but its length differs from `prev_points`.
 ///
 /// # Returns
 /// One [`TrackResult`] per input point, in the same order.
@@ -212,6 +213,13 @@ fn track_into<I: TrackImage>(
     assert!(
         !prev_pyramid.is_empty(),
         "pyramid must have at least 1 level"
+    );
+    assert!(
+        prev_pyramid
+            .iter()
+            .zip(curr_pyramid)
+            .all(|(prev, curr)| prev.dimensions() == curr.dimensions()),
+        "both pyramids must have the same level sizes"
     );
     assert!(window_size % 2 == 1, "Window size must be odd");
     if let Some(predicted) = predicted {
@@ -875,6 +883,9 @@ fn window_error<I: TrackImage>(lv: &Level<I>, cx: f32, cy: f32, prev_patch: &[f3
 ///   [`calc_optical_flow_ex`]
 /// * `fb_threshold` - maximum allowed round-trip distance in pixels; see
 ///   [`DEFAULT_FB_THRESHOLD`]
+///
+/// # Panics
+/// As [`calc_optical_flow_ex`].
 #[allow(clippy::too_many_arguments)]
 pub fn calc_optical_flow_fb(
     prev_pyramid: &[GrayImage],
@@ -1236,7 +1247,15 @@ impl TrackerContext {
 
     /// Builds the previous- and next-frame pyramids into the context's reusable
     /// buffers. Zero-alloc in steady state (same image size and `levels`).
+    ///
+    /// # Panics
+    /// Panics if the two frames differ in size.
     pub fn prepare(&mut self, prev: &GrayImage, next: &GrayImage, levels: usize) {
+        assert_eq!(
+            prev.dimensions(),
+            next.dimensions(),
+            "frames must have the same size"
+        );
         build_pyramid_into(prev, levels, &mut self.tracker.prev_pyramid);
         build_pyramid_into(next, levels, &mut self.tracker.next_pyramid);
     }

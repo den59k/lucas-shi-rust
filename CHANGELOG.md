@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- `TrackerContext::prepare`, `calc_optical_flow_ex` and `calc_optical_flow_fb`
+  panic when the two frames or pyramids differ in size. Previously the next
+  frame was read with the previous frame's width, which returned wrong
+  positions or panicked inside the tracking loop.
+
 ### Added
 
 - f32 pipeline for images in physical units, e.g. thermal frames in °C:
