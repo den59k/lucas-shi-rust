@@ -2,7 +2,7 @@
  "units": "ms; [mean, 95% CI lower, 95% CI upper] of the Criterion mean",
  "revisions": {
   "v0.3.1": "crates.io optical-flow-lk 0.3.1 (source identical to f34658f)",
-  "current": "3766415 (float-features)"
+  "current": "1dcca4a (float-features; measured as 3766415 before a rebase onto 0.4.1 with unchanged sources)"
  },
  "runs": {
   "native-1": {
