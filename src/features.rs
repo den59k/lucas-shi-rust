@@ -252,7 +252,12 @@ impl Threshold {
 
     /// A score below which no pixel can pass, so NMS may skip it. The
     /// relative part costs a pass over the scores, saved when it is disabled.
-    #[inline(always)]
+    // Inlined into the pipeline, this pass slows the surrounding loops under
+    // WASM by 5-10% (Node, simd128); kept out of line there, detection is
+    // 2-9% faster than with the pass inlined. Native targets inline it, which
+    // also gives it the AVX2 code of the pipeline on x86.
+    #[cfg_attr(target_arch = "wasm32", inline(never))]
+    #[cfg_attr(not(target_arch = "wasm32"), inline(always))]
     fn floor(&self, scores: &[f32], width: usize, height: usize) -> f32 {
         let relative = if self.relative > 0.0 {
             quality_floor(scores, width, height, self.relative)
