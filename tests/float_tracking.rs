@@ -4,7 +4,7 @@
 use image::GrayImage;
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, FloatImageView, FloatTrackerContext,
-    TrackResult, TrackStatus, TrackerContext,
+    TrackParams, TrackResult, TrackStatus, TrackerContext,
 };
 
 const WIN: usize = 21;
@@ -107,7 +107,16 @@ fn track(
 ) -> Vec<TrackResult> {
     let mut ctx = FloatTrackerContext::new();
     ctx.prepare(view(prev, w, h), view(next, w, h), levels);
-    ctx.track(points, predicted, WIN, ITERS, threshold).to_vec()
+    ctx.track(
+        points,
+        predicted,
+        TrackParams {
+            window_size: WIN,
+            max_iterations: ITERS,
+            min_eigen_threshold: threshold,
+        },
+    )
+    .to_vec()
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -187,7 +196,15 @@ fn agrees_with_the_8_bit_tracker_on_8_bit_frames() {
         let mut ctx = TrackerContext::new();
         ctx.prepare(&prev_u8, &next_u8, levels);
         let expected = ctx
-            .track(&points, None, WIN, ITERS, DEFAULT_MIN_EIGEN_THRESHOLD)
+            .track(
+                &points,
+                None,
+                TrackParams {
+                    window_size: WIN,
+                    max_iterations: ITERS,
+                    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                },
+            )
             .to_vec();
         let actual = track(
             &prev,
@@ -260,7 +277,15 @@ fn tiny_physical_contrast_tracks_like_full_contrast() {
     };
     let mut ctx = TrackerContext::new();
     ctx.prepare(&gray(&prev), &gray(&next), 3);
-    let quantized = ctx.track(&points, None, WIN, ITERS, DEFAULT_MIN_EIGEN_THRESHOLD);
+    let quantized = ctx.track(
+        &points,
+        None,
+        TrackParams {
+            window_size: WIN,
+            max_iterations: ITERS,
+            min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+        },
+    );
     let mean_error = |results: &[TrackResult]| {
         let errors: Vec<f32> = results
             .iter()
@@ -375,7 +400,16 @@ fn forward_backward_check_flags_occlusion() {
     let points = [(60.0, 60.0), (170.0, 120.0)];
     let mut ctx = FloatTrackerContext::new();
     ctx.prepare(view(&prev, w, h), view(&next, w, h), 3);
-    let results = ctx.track_fb(&points, None, WIN, ITERS, 1e-3, DEFAULT_FB_THRESHOLD);
+    let results = ctx.track_fb(
+        &points,
+        None,
+        TrackParams {
+            window_size: WIN,
+            max_iterations: ITERS,
+            min_eigen_threshold: 1e-3,
+        },
+        DEFAULT_FB_THRESHOLD,
+    );
     assert_ne!(results[0].status, TrackStatus::Tracked);
     assert_eq!(results[1].status, TrackStatus::Tracked);
 }
@@ -393,12 +427,30 @@ fn repeated_and_reused_tracking_is_deterministic() {
         for pair in frames.windows(2) {
             ctx.prepare(view(&pair[0], w, h), view(&pair[1], w, h), 3);
             let results = ctx
-                .track_fb(&points, None, 15, 15, 1e-3, DEFAULT_FB_THRESHOLD)
+                .track_fb(
+                    &points,
+                    None,
+                    TrackParams {
+                        window_size: 15,
+                        max_iterations: 15,
+                        min_eigen_threshold: 1e-3,
+                    },
+                    DEFAULT_FB_THRESHOLD,
+                )
                 .to_vec();
             let mut fresh = FloatTrackerContext::new();
             fresh.prepare(view(&pair[0], w, h), view(&pair[1], w, h), 3);
             assert_eq!(
-                fresh.track_fb(&points, None, 15, 15, 1e-3, DEFAULT_FB_THRESHOLD),
+                fresh.track_fb(
+                    &points,
+                    None,
+                    TrackParams {
+                        window_size: 15,
+                        max_iterations: 15,
+                        min_eigen_threshold: 1e-3
+                    },
+                    DEFAULT_FB_THRESHOLD
+                ),
                 results
             );
             if round == 0 {
@@ -432,5 +484,13 @@ fn even_window_panics() {
     let frame = vec![1.0f32; 32 * 32];
     let mut ctx = FloatTrackerContext::new();
     ctx.prepare(view(&frame, 32, 32), view(&frame, 32, 32), 1);
-    ctx.track(&[(16.0, 16.0)], None, 8, 10, 0.0);
+    ctx.track(
+        &[(16.0, 16.0)],
+        None,
+        TrackParams {
+            window_size: 8,
+            max_iterations: 10,
+            min_eigen_threshold: 0.0,
+        },
+    );
 }

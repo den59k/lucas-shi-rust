@@ -8,9 +8,9 @@
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, FloatDetectorContext, FloatImageView,
-    FloatTrackerContext, ScoreThreshold, TrackResult, TrackStatus, build_pyramid,
-    calc_optical_flow_ex, calc_optical_flow_fb, good_features_to_track,
+    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, FloatDetectorContext,
+    FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackParams, TrackResult,
+    TrackStatus, build_pyramid, calc_optical_flow_ex, calc_optical_flow_fb, good_features_to_track,
     good_features_to_track_grid,
 };
 
@@ -39,9 +39,9 @@ impl Hash {
     }
 }
 
-fn corners_line(id: String, corners: &[(u32, u32, f32)]) -> String {
+fn corners_line(id: String, corners: &[Corner]) -> String {
     let mut hash = Hash::new();
-    for &(x, y, score) in corners {
+    for &Corner { x, y, score } in corners {
         hash.u32(x);
         hash.u32(y);
         hash.u32(score.to_bits());
@@ -157,8 +157,17 @@ fn detection_lines() -> Vec<String> {
             .collect();
         for (cols, rows, budget) in [(1, 1, 10), (6, 4, 5), (3, 2, 1)] {
             for points in [&[][..], &existing[..]] {
-                let corners =
-                    good_features_to_track_grid(&image, cols, rows, budget, 0.01, 6, points);
+                let corners = good_features_to_track_grid(
+                    &image,
+                    Grid {
+                        cols,
+                        rows,
+                        max_per_cell: budget,
+                    },
+                    0.01,
+                    6,
+                    points,
+                );
                 lines.push(corners_line(
                     format!("grid {name} {cols}x{rows} b={budget} e={}", points.len()),
                     &corners,
@@ -173,7 +182,17 @@ fn detection_lines() -> Vec<String> {
                 format!("detect {name} q={quality} d=6"),
                 &corners,
             ));
-            let corners = good_features_to_track_grid(&image, 6, 4, 5, quality, 6, &existing);
+            let corners = good_features_to_track_grid(
+                &image,
+                Grid {
+                    cols: 6,
+                    rows: 4,
+                    max_per_cell: 5,
+                },
+                quality,
+                6,
+                &existing,
+            );
             lines.push(corners_line(
                 format!("grid {name} 6x4 b=5 e=6 q={quality}"),
                 &corners,
@@ -216,7 +235,7 @@ fn tracking_lines() -> Vec<String> {
         good_features_to_track(&prev, 0.05, 8)
             .iter()
             .take(60)
-            .map(|&(x, y, _)| (x as f32, y as f32)),
+            .map(|corner| corner.position()),
     );
 
     let mut lines = Vec::new();
@@ -234,9 +253,11 @@ fn tracking_lines() -> Vec<String> {
                     &next_pyramid,
                     &points,
                     guess,
-                    window,
-                    iterations,
-                    DEFAULT_MIN_EIGEN_THRESHOLD,
+                    TrackParams {
+                        window_size: window,
+                        max_iterations: iterations,
+                        min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                    },
                 );
                 lines.push(tracks_line(id(label), &results));
             }
@@ -245,9 +266,11 @@ fn tracking_lines() -> Vec<String> {
                 &next_pyramid,
                 &points,
                 None,
-                window,
-                iterations,
-                DEFAULT_MIN_EIGEN_THRESHOLD,
+                TrackParams {
+                    window_size: window,
+                    max_iterations: iterations,
+                    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                },
                 DEFAULT_FB_THRESHOLD,
             );
             lines.push(tracks_line(id("track_fb"), &results));
@@ -299,13 +322,23 @@ fn float_lines() -> Vec<String> {
             ));
             if distance == 6 && threshold == ScoreThreshold::absolute(1e-5) {
                 let corners = corners.iter().take(80);
-                points = corners.map(|&(x, y, _)| (x as f32, y as f32)).collect();
+                points = corners.map(|corner| corner.position()).collect();
             }
         }
     }
     let existing = [(80.0, 60.0), (10.5, 180.0)];
     let threshold = ScoreThreshold::absolute(1e-5);
-    let corners = detector.detect_grid(prev_view, 4, 3, 6, threshold, 8, &existing);
+    let corners = detector.detect_grid(
+        prev_view,
+        Grid {
+            cols: 4,
+            rows: 3,
+            max_per_cell: 6,
+        },
+        threshold,
+        8,
+        &existing,
+    );
     lines.push(corners_line(
         "float_detect grid 4x3 b=6 e=2".into(),
         corners,
@@ -323,14 +356,24 @@ fn float_lines() -> Vec<String> {
                     shift.0, shift.1
                 )
             };
-            let results = tracker.track(&points, None, window, iterations, 1e-6);
+            let results = tracker.track(
+                &points,
+                None,
+                TrackParams {
+                    window_size: window,
+                    max_iterations: iterations,
+                    min_eigen_threshold: 1e-6,
+                },
+            );
             lines.push(tracks_line(id("float_track"), results));
             let results = tracker.track_fb(
                 &points,
                 None,
-                window,
-                iterations,
-                1e-6,
+                TrackParams {
+                    window_size: window,
+                    max_iterations: iterations,
+                    min_eigen_threshold: 1e-6,
+                },
                 DEFAULT_FB_THRESHOLD,
             );
             lines.push(tracks_line(id("float_track_fb"), results));

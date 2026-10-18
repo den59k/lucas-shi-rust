@@ -14,7 +14,7 @@ use image::GrayImage;
 #[path = "support/feature_inputs.rs"]
 mod feature_inputs;
 use feature_inputs::existing_points;
-use optical_flow_lk::{good_features_to_track, good_features_to_track_grid};
+use optical_flow_lk::{Corner, Grid, good_features_to_track, good_features_to_track_grid};
 
 const QUALITY: f32 = 0.05;
 const MIN_DISTANCE: u32 = 8;
@@ -38,14 +38,16 @@ impl Mode {
         }
     }
 
-    fn detect(self, image: &GrayImage, existing: &[(f32, f32)]) -> Vec<(u32, u32, f32)> {
+    fn detect(self, image: &GrayImage, existing: &[(f32, f32)]) -> Vec<Corner> {
         match self {
             Self::Plain => good_features_to_track(image, QUALITY, MIN_DISTANCE),
             Self::Grid | Self::GridTopUp => good_features_to_track_grid(
                 image,
-                GRID_COLS,
-                GRID_ROWS,
-                MAX_PER_CELL,
+                Grid {
+                    cols: GRID_COLS,
+                    rows: GRID_ROWS,
+                    max_per_cell: MAX_PER_CELL,
+                },
                 QUALITY,
                 MIN_DISTANCE,
                 existing,

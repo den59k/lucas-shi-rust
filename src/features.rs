@@ -6,6 +6,53 @@ use crate::utils::{
     fast_gradients::compute_gradients_into,
 };
 
+/// A detected corner: its pixel position and its Shi-Tomasi score, the
+/// minimum eigenvalue of the mean 3x3 structure tensor.
+///
+/// Scores are in (grey levels / pixel)^2 for 8-bit images and in
+/// (input unit / pixel)^2 for f32 images.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Corner {
+    /// Column in pixels.
+    pub x: u32,
+    /// Row in pixels.
+    pub y: u32,
+    /// Corner score.
+    pub score: f32,
+}
+
+impl Corner {
+    /// The position as tracker input, `(x, y)` in pixels.
+    pub fn position(&self) -> (f32, f32) {
+        (self.x as f32, self.y as f32)
+    }
+}
+
+impl From<(u32, u32, f32)> for Corner {
+    fn from((x, y, score): (u32, u32, f32)) -> Self {
+        Self { x, y, score }
+    }
+}
+
+impl From<Corner> for (u32, u32, f32) {
+    fn from(corner: Corner) -> Self {
+        (corner.x, corner.y, corner.score)
+    }
+}
+
+/// Detection grid of [`good_features_to_track_grid`] and `detect_grid`: the
+/// image is split into `cols` x `rows` equal cells, and each cell keeps up to
+/// `max_per_cell` corners, counting existing points.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Grid {
+    /// Number of columns; must be non-zero.
+    pub cols: u32,
+    /// Number of rows; must be non-zero.
+    pub rows: u32,
+    /// Corner budget per cell, counting existing points in the cell.
+    pub max_per_cell: u32,
+}
+
 /// Finds good features points using the Shi-Tomasi algorithm
 ///
 /// This is a convenience wrapper that allocates a fresh [`DetectorContext`];
@@ -19,17 +66,17 @@ use crate::utils::{
 ///
 ///
 /// # Returns
-/// `(x, y, min_eigenvalue)` tuples sorted by descending quality; equal scores
-/// retain row-major order. Only finite, positive scores are returned. Flat
-/// images and images narrower or shorter than three pixels yield no features.
-/// Scores are eigenvalues of the mean 3x3 gradient tensor, using Scharr gradients
+/// [`Corner`]s sorted by descending score; equal scores retain row-major
+/// order. Only finite, positive scores are returned. Flat images and images
+/// narrower or shorter than three pixels yield no features. Scores are
+/// eigenvalues of the mean 3x3 gradient tensor, using Scharr gradients
 /// normalized by 32, in (grey levels / pixel)^2. Raw products and window
 /// sums are accumulated exactly; normalization occurs once, at the final score.
 pub fn good_features_to_track(
     image: &GrayImage,
     quality_level: f32,
     min_distance: u32,
-) -> Vec<(u32, u32, f32)> {
+) -> Vec<Corner> {
     let mut ctx = DetectorContext::new();
     ctx.detect(image, quality_level, min_distance);
     ctx.detector.take_results()
@@ -38,12 +85,12 @@ pub fn good_features_to_track(
 /// Finds good feature points with uniform frame coverage by detecting per grid
 /// cell, while respecting features that are already being tracked.
 ///
-/// The image is split into a `grid_cols` x `grid_rows` grid. For every cell up
-/// to `max_per_cell` best Shi-Tomasi corners are returned, where `min_distance`
-/// is respected both among the freshly detected corners and against
-/// `existing_points`. Cells whose budget is already met by `existing_points` are
-/// skipped, so this can be called every few frames to top up lost tracks
-/// without clustering new detections on top of surviving ones.
+/// For every cell of `grid` up to `max_per_cell` best Shi-Tomasi corners are
+/// returned, where `min_distance` is respected both among the freshly detected
+/// corners and against `existing_points`. Cells whose budget is already met by
+/// `existing_points` are skipped, so this can be called every few frames to
+/// top up lost tracks without clustering new detections on top of surviving
+/// ones.
 ///
 /// This is a convenience wrapper that allocates a fresh [`DetectorContext`];
 /// per-frame callers should keep one context and call
@@ -51,8 +98,7 @@ pub fn good_features_to_track(
 ///
 /// # Arguments
 /// * `image` - Target image (grayscale)
-/// * `grid_cols` / `grid_rows` - grid dimensions (both must be non-zero)
-/// * `max_per_cell` - feature budget per cell, counting `existing_points`
+/// * `grid` - grid dimensions and per-cell budget, counting `existing_points`
 /// * `quality_level` - Shi-Tomasi quality level, see [`good_features_to_track`]
 /// * `min_distance` - minimum spacing in pixels between any two kept points
 ///   (new or existing)
@@ -60,28 +106,20 @@ pub fn good_features_to_track(
 ///   occupy budget and must be kept clear by `min_distance`
 ///
 /// # Returns
-/// Newly detected corners as `(x, y, min_eigenvalue)`, sorted by descending
-/// quality. `existing_points` are never included in the output.
-#[allow(clippy::too_many_arguments)]
+/// Newly detected [`Corner`]s, sorted by descending score. `existing_points`
+/// are never included in the output.
+///
+/// # Panics
+/// Panics if `grid.cols` or `grid.rows` is zero.
 pub fn good_features_to_track_grid(
     image: &GrayImage,
-    grid_cols: u32,
-    grid_rows: u32,
-    max_per_cell: u32,
+    grid: Grid,
     quality_level: f32,
     min_distance: u32,
     existing_points: &[(f32, f32)],
-) -> Vec<(u32, u32, f32)> {
+) -> Vec<Corner> {
     let mut ctx = DetectorContext::new();
-    ctx.detect_grid(
-        image,
-        grid_cols,
-        grid_rows,
-        max_per_cell,
-        quality_level,
-        min_distance,
-        existing_points,
-    );
+    ctx.detect_grid(image, grid, quality_level, min_distance, existing_points);
     ctx.detector.take_results()
 }
 
@@ -177,7 +215,7 @@ impl DetectorContext {
         image: &GrayImage,
         quality_level: f32,
         min_distance: u32,
-    ) -> &[(u32, u32, f32)] {
+    ) -> &[Corner] {
         self.detector
             .detect(image, Threshold::relative(quality_level), min_distance)
     }
@@ -185,20 +223,20 @@ impl DetectorContext {
     /// Detects corners per grid cell as [`good_features_to_track_grid`] does,
     /// returning them from the context's own result buffer. The slice is valid
     /// until the next call.
-    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Panics
+    /// Panics if `grid.cols` or `grid.rows` is zero.
     pub fn detect_grid(
         &mut self,
         image: &GrayImage,
-        grid_cols: u32,
-        grid_rows: u32,
-        max_per_cell: u32,
+        grid: Grid,
         quality_level: f32,
         min_distance: u32,
         existing_points: &[(f32, f32)],
-    ) -> &[(u32, u32, f32)] {
+    ) -> &[Corner] {
         self.detector.detect_grid(
             image,
-            GridLayout::new(grid_cols, grid_rows, max_per_cell),
+            grid,
             Threshold::relative(quality_level),
             min_distance,
             existing_points,
@@ -296,7 +334,7 @@ impl<T: TensorSum> Detector<T> {
         image: I,
         threshold: Threshold,
         min_distance: u32,
-    ) -> &[(u32, u32, f32)] {
+    ) -> &[Corner] {
         self.detect_candidates(image, threshold);
         let (width, height) = image.dimensions();
         self.selection
@@ -305,14 +343,18 @@ impl<T: TensorSum> Detector<T> {
 
     /// Corners per grid cell, see [`DetectorContext::detect_grid`], from the
     /// result buffer.
+    ///
+    /// # Panics
+    /// Panics if `grid.cols` or `grid.rows` is zero.
     pub(crate) fn detect_grid<I: DetectorImage<Sum = T>>(
         &mut self,
         image: I,
-        grid: GridLayout,
+        grid: Grid,
         threshold: Threshold,
         min_distance: u32,
         existing_points: &[(f32, f32)],
-    ) -> &[(u32, u32, f32)] {
+    ) -> &[Corner] {
+        assert!(grid.cols > 0 && grid.rows > 0, "grid must be non-empty");
         if grid.max_per_cell == 0 {
             return self.selection.clear();
         }
@@ -329,7 +371,7 @@ impl<T: TensorSum> Detector<T> {
     }
 
     /// Moves the result buffer out, for the allocating free functions.
-    pub(crate) fn take_results(&mut self) -> Vec<(u32, u32, f32)> {
+    pub(crate) fn take_results(&mut self) -> Vec<Corner> {
         std::mem::take(&mut self.selection.results)
     }
 
@@ -444,21 +486,21 @@ fn filter_by_threshold(candidates: &mut Vec<(u32, u32, f32)>, threshold: Thresho
 }
 
 /// Greedy minimum-distance filter over quality-sorted candidates, writing the
-/// kept points into `out`.
-fn enforce_spacing(
+/// kept points into `out`, as [`Corner`]s or as plain `(x, y, score)` triples.
+fn enforce_spacing<O: From<(u32, u32, f32)>>(
     candidates: &[(u32, u32, f32)],
     min_distance: u32,
     width: u32,
     height: u32,
     occupancy: &mut OccupancyGrid,
-    out: &mut Vec<(u32, u32, f32)>,
+    out: &mut Vec<O>,
 ) {
     out.clear();
     if candidates.is_empty() {
         return;
     }
     if min_distance == 0 {
-        out.extend_from_slice(candidates);
+        out.extend(candidates.iter().map(|&candidate| O::from(candidate)));
         return;
     }
     occupancy.reset(width, height, min_distance);
@@ -468,28 +510,7 @@ fn enforce_spacing(
             // Multiple accepted points can occupy one cell (diagonally). Keep
             // every one so later candidates cannot hide an earlier neighbor.
             occupancy.insert(xf, yf);
-            out.push((x, y, q));
-        }
-    }
-}
-
-/// Grid dimensions and per-cell budget of a grid detection.
-#[derive(Clone, Copy)]
-pub(crate) struct GridLayout {
-    cols: u32,
-    rows: u32,
-    max_per_cell: u32,
-}
-
-impl GridLayout {
-    /// # Panics
-    /// Panics if `cols` or `rows` is zero.
-    pub(crate) fn new(cols: u32, rows: u32, max_per_cell: u32) -> Self {
-        assert!(cols > 0 && rows > 0, "grid must be non-empty");
-        Self {
-            cols,
-            rows,
-            max_per_cell,
+            out.push(O::from((x, y, q)));
         }
     }
 }
@@ -498,7 +519,7 @@ impl GridLayout {
 /// buffer.
 #[derive(Default)]
 struct Selection {
-    results: Vec<(u32, u32, f32)>,
+    results: Vec<Corner>,
     occupancy: OccupancyGrid,
     cell_count: Vec<u32>,
 }
@@ -512,7 +533,7 @@ impl Selection {
         reserve_total(&mut self.cell_count, capacity.grid_cells as usize);
     }
 
-    fn clear(&mut self) -> &[(u32, u32, f32)] {
+    fn clear(&mut self) -> &[Corner] {
         self.results.clear();
         &self.results
     }
@@ -524,7 +545,7 @@ impl Selection {
         min_distance: u32,
         width: u32,
         height: u32,
-    ) -> &[(u32, u32, f32)] {
+    ) -> &[Corner] {
         enforce_spacing(
             candidates,
             min_distance,
@@ -542,15 +563,15 @@ impl Selection {
         candidates: &[(u32, u32, f32)],
         width: u32,
         height: u32,
-        grid: GridLayout,
+        grid: Grid,
         min_distance: u32,
         existing_points: &[(f32, f32)],
-    ) -> &[(u32, u32, f32)] {
+    ) -> &[Corner] {
         self.results.clear();
         if candidates.is_empty() {
             return &self.results;
         }
-        let GridLayout {
+        let Grid {
             cols: grid_cols,
             rows: grid_rows,
             max_per_cell,
@@ -590,7 +611,7 @@ impl Selection {
 
             self.occupancy.insert(xf, yf);
             self.cell_count[cell] += 1;
-            self.results.push((x, y, q));
+            self.results.push(Corner { x, y, score: q });
         }
 
         &self.results
@@ -1388,9 +1409,14 @@ mod tests {
                 good_features_to_track(&image, 0.01, 5)
             );
             let existing = [(10.0, 10.0), (40.0, 30.0)];
+            let grid = Grid {
+                cols: 4,
+                rows: 3,
+                max_per_cell: 3,
+            };
             assert_eq!(
-                ctx.detect_grid(&image, 4, 3, 3, 0.01, 6, &existing),
-                good_features_to_track_grid(&image, 4, 3, 3, 0.01, 6, &existing)
+                ctx.detect_grid(&image, grid, 0.01, 6, &existing),
+                good_features_to_track_grid(&image, grid, 0.01, 6, &existing)
             );
         }
     }

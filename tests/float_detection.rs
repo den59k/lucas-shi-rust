@@ -3,15 +3,13 @@
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    FloatDetectorContext, FloatImageView, ScoreThreshold, good_features_to_track,
+    Corner, FloatDetectorContext, FloatImageView, Grid, ScoreThreshold, good_features_to_track,
     good_features_to_track_grid,
 };
 
 #[path = "../benches/support/feature_inputs.rs"]
 #[allow(dead_code)]
 mod feature_inputs;
-
-type Corner = (u32, u32, f32);
 
 fn as_f32(image: &GrayImage) -> Vec<f32> {
     image.as_raw().iter().map(|&v| v as f32).collect()
@@ -92,9 +90,28 @@ fn integer_images_give_the_8_bit_result_bit_for_bit() {
         let existing: Vec<(f32, f32)> = (0..6)
             .map(|i| ((i * 37 % w) as f32 + 0.5, (i * 23 % h) as f32))
             .collect();
-        let expected = good_features_to_track_grid(&image, 6, 4, 5, 0.01, 6, &existing);
-        let actual =
-            context.detect_grid(view(&pixels, w, h), 6, 4, 5, relative(0.01), 6, &existing);
+        let expected = good_features_to_track_grid(
+            &image,
+            Grid {
+                cols: 6,
+                rows: 4,
+                max_per_cell: 5,
+            },
+            0.01,
+            6,
+            &existing,
+        );
+        let actual = context.detect_grid(
+            view(&pixels, w, h),
+            Grid {
+                cols: 6,
+                rows: 4,
+                max_per_cell: 5,
+            },
+            relative(0.01),
+            6,
+            &existing,
+        );
         assert_eq!(actual, expected, "{name} grid");
     }
 }
@@ -123,19 +140,17 @@ fn scores_scale_with_squared_contrast() {
     assert!(reference.len() > 20);
     for (pixels, factor) in [(&scaled, 16.0f32), (&low, 1.0 / 4096.0)] {
         let corners = detect(pixels, 160, 120, relative(0.05), 6);
-        let expected: Vec<Corner> = reference
-            .iter()
-            .map(|&(x, y, s)| (x, y, s * factor))
-            .collect();
+        let scale = |c: &Corner| Corner {
+            score: c.score * factor,
+            ..*c
+        };
+        let expected: Vec<Corner> = reference.iter().map(scale).collect();
         assert_eq!(corners, expected, "factor {factor}");
         // An absolute threshold scales the same way.
         let absolute =
             |pixels: &[f32], t: f32| detect(pixels, 160, 120, ScoreThreshold::absolute(t), 6);
         assert_eq!(absolute(pixels, 2.0 * factor), {
-            absolute(&base, 2.0)
-                .into_iter()
-                .map(|(x, y, s)| (x, y, s * factor))
-                .collect::<Vec<_>>()
+            absolute(&base, 2.0).iter().map(scale).collect::<Vec<_>>()
         });
     }
 }
@@ -186,7 +201,7 @@ fn weak_thermal_contrast_is_found_in_physical_units() {
         assert!(
             corners
                 .iter()
-                .any(|&(x, y, _)| x.abs_diff(cx) <= 1 && y.abs_diff(cy) <= 1),
+                .any(|c| c.x.abs_diff(cx) <= 1 && c.y.abs_diff(cy) <= 1),
             "no corner near ({cx}, {cy}) in {corners:?}"
         );
     }
@@ -200,7 +215,13 @@ fn weak_thermal_contrast_is_found_in_physical_units() {
         ScoreThreshold::absolute(1e-3),
         4,
     );
-    let quadrupled: Vec<Corner> = corners.iter().map(|&(x, y, s)| (x, y, 4.0 * s)).collect();
+    let quadrupled: Vec<Corner> = corners
+        .iter()
+        .map(|&c| Corner {
+            score: 4.0 * c.score,
+            ..c
+        })
+        .collect();
     assert_eq!(doubled, quadrupled);
 }
 
@@ -223,12 +244,32 @@ fn relative_reference_is_the_strongest_corner_of_the_whole_image() {
         .collect();
     let mut context = FloatDetectorContext::new();
     let image = view(&pixels, w, h);
-    let right_half = |corners: &[Corner]| corners.iter().filter(|c| c.0 >= 32).count();
+    let right_half = |corners: &[Corner]| corners.iter().filter(|c| c.x >= 32).count();
 
-    let global = context.detect_grid(image, 2, 1, 10, relative(0.05), 3, &[]);
-    assert!(global.iter().all(|c| c.0 < 32) && !global.is_empty());
+    let global = context.detect_grid(
+        image,
+        Grid {
+            cols: 2,
+            rows: 1,
+            max_per_cell: 10,
+        },
+        relative(0.05),
+        3,
+        &[],
+    );
+    assert!(global.iter().all(|c| c.x < 32) && !global.is_empty());
 
-    let absolute = context.detect_grid(image, 2, 1, 10, ScoreThreshold::absolute(1e-3), 3, &[]);
+    let absolute = context.detect_grid(
+        image,
+        Grid {
+            cols: 2,
+            rows: 1,
+            max_per_cell: 10,
+        },
+        ScoreThreshold::absolute(1e-3),
+        3,
+        &[],
+    );
     assert!(right_half(absolute) >= 4, "{absolute:?}");
 }
 
@@ -246,8 +287,8 @@ fn results_are_ordered_and_deterministic_across_reuse() {
     }
     for corners in [&fresh_a, &fresh_b] {
         assert!(corners.windows(2).all(|pair| {
-            let ((x0, y0, s0), (x1, y1, s1)) = (pair[0], pair[1]);
-            s0 > s1 || (s0 == s1 && (y0, x0) < (y1, x1))
+            let (a, b) = (pair[0], pair[1]);
+            a.score > b.score || (a.score == b.score && (a.y, a.x) < (b.y, b.x))
         }));
     }
 }
@@ -264,11 +305,11 @@ fn plateau_ties_follow_row_major_order() {
         })
         .collect();
     let corners = detect(&pixels, w, h, ScoreThreshold::absolute(1e-3), 0);
-    let strongest = corners[0].2;
+    let strongest = corners[0].score;
     let tied: Vec<(u32, u32)> = corners
         .iter()
-        .filter(|c| c.2 == strongest)
-        .map(|c| (c.0, c.1))
+        .filter(|c| c.score == strongest)
+        .map(|c| (c.x, c.y))
         .collect();
     assert!(tied.len() >= 2, "{corners:?}");
     let mut row_major = tied.clone();
@@ -288,7 +329,17 @@ fn degenerate_images_yield_no_corners() {
     let mut context = FloatDetectorContext::new();
     assert!(
         context
-            .detect_grid(view(&flat, 50, 40), 3, 3, 5, threshold, 2, &[(10.0, 10.0)])
+            .detect_grid(
+                view(&flat, 50, 40),
+                Grid {
+                    cols: 3,
+                    rows: 3,
+                    max_per_cell: 5
+                },
+                threshold,
+                2,
+                &[(10.0, 10.0)]
+            )
             .is_empty()
     );
 }
@@ -301,13 +352,33 @@ fn grid_budget_counts_existing_points_and_keeps_their_distance() {
     let mut context = FloatDetectorContext::new();
     assert!(
         context
-            .detect_grid(image, 4, 3, 0, threshold, 5, &[])
+            .detect_grid(
+                image,
+                Grid {
+                    cols: 4,
+                    rows: 3,
+                    max_per_cell: 0
+                },
+                threshold,
+                5,
+                &[]
+            )
             .is_empty()
     );
 
     let existing = [(20.0, 20.0), (21.0, 22.0), (100.0, 60.0)];
     let corners = context
-        .detect_grid(image, 4, 3, 3, threshold, 8, &existing)
+        .detect_grid(
+            image,
+            Grid {
+                cols: 4,
+                rows: 3,
+                max_per_cell: 3,
+            },
+            threshold,
+            8,
+            &existing,
+        )
         .to_vec();
     let cell = |x: f32, y: f32| {
         ((y / 120.0 * 3.0) as usize).min(2) * 4 + ((x / 160.0 * 4.0) as usize).min(3)
@@ -316,7 +387,7 @@ fn grid_budget_counts_existing_points_and_keeps_their_distance() {
     for &(x, y) in &existing {
         counts[cell(x, y)] += 1;
     }
-    for &(x, y, _) in &corners {
+    for &Corner { x, y, .. } in &corners {
         counts[cell(x as f32, y as f32)] += 1;
         for &(ex, ey) in &existing {
             let distance = ((x as f32 - ex).powi(2) + (y as f32 - ey).powi(2)).sqrt();
@@ -333,9 +404,11 @@ fn empty_grid_panics() {
     let pixels = vec![0.0f32; 16];
     FloatDetectorContext::new().detect_grid(
         view(&pixels, 4, 4),
-        0,
-        2,
-        1,
+        Grid {
+            cols: 0,
+            rows: 2,
+            max_per_cell: 1,
+        },
         ScoreThreshold::absolute(0.0),
         0,
         &[],

@@ -11,8 +11,8 @@ use std::cell::Cell;
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, DetectorCapacity, DetectorContext,
-    FloatDetectorContext, FloatImageView, FloatTrackerContext, ScoreThreshold, TrackerCapacity,
-    TrackerContext,
+    FloatDetectorContext, FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackParams,
+    TrackerCapacity, TrackerContext,
 };
 
 struct CountingAllocator;
@@ -97,9 +97,11 @@ fn steady_state_track_is_allocation_free() {
         ctx.track(
             &points,
             Some(&predicted),
-            21,
-            30,
-            DEFAULT_MIN_EIGEN_THRESHOLD,
+            TrackParams {
+                window_size: 21,
+                max_iterations: 30,
+                min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+            },
         );
     }
 
@@ -109,9 +111,11 @@ fn steady_state_track_is_allocation_free() {
         ctx.track(
             &points,
             Some(&predicted),
-            21,
-            30,
-            DEFAULT_MIN_EIGEN_THRESHOLD,
+            TrackParams {
+                window_size: 21,
+                max_iterations: 30,
+                min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+            },
         )
         .len()
     });
@@ -134,12 +138,34 @@ fn steady_state_detection_is_allocation_free() {
     // Warm-up: lets every buffer grow to its steady-state capacity.
     for _ in 0..3 {
         ctx.detect(&img, 0.01, 8);
-        ctx.detect_grid(&img, 6, 4, 5, 0.01, 8, &existing);
+        ctx.detect_grid(
+            &img,
+            Grid {
+                cols: 6,
+                rows: 4,
+                max_per_cell: 5,
+            },
+            0.01,
+            8,
+            &existing,
+        );
     }
 
     let (allocs, (plain, grid)) = allocations(|| {
         let plain = ctx.detect(&img, 0.01, 8).len();
-        let grid = ctx.detect_grid(&img, 6, 4, 5, 0.01, 8, &existing).len();
+        let grid = ctx
+            .detect_grid(
+                &img,
+                Grid {
+                    cols: 6,
+                    rows: 4,
+                    max_per_cell: 5,
+                },
+                0.01,
+                8,
+                &existing,
+            )
+            .len();
         (plain, grid)
     });
     assert!(
@@ -182,9 +208,30 @@ fn reserved_detection_does_not_allocate_on_any_content() {
             [
                 ctx.detect(image, 0.0, 0).len(),
                 ctx.detect(image, 0.01, 8).len(),
-                ctx.detect_grid(image, 6, 4, 5, 0.0, 0, &existing).len(),
-                ctx.detect_grid(image, 4, 3, 50, 0.01, 6, &existing[..10])
-                    .len(),
+                ctx.detect_grid(
+                    image,
+                    Grid {
+                        cols: 6,
+                        rows: 4,
+                        max_per_cell: 5,
+                    },
+                    0.0,
+                    0,
+                    &existing,
+                )
+                .len(),
+                ctx.detect_grid(
+                    image,
+                    Grid {
+                        cols: 4,
+                        rows: 3,
+                        max_per_cell: 50,
+                    },
+                    0.01,
+                    6,
+                    &existing[..10],
+                )
+                .len(),
             ]
         });
         assert_eq!(
@@ -211,7 +258,17 @@ fn reserved_detection_does_not_allocate_on_any_content() {
         for image in &images {
             ctx.detect(image, 0.0, 8);
             ctx.detect(image, 0.0, 30);
-            ctx.detect_grid(image, 6, 4, 1000, 0.0, 8, &existing);
+            ctx.detect_grid(
+                image,
+                Grid {
+                    cols: 6,
+                    rows: 4,
+                    max_per_cell: 1000,
+                },
+                0.0,
+                8,
+                &existing,
+            );
         }
     });
     assert_eq!(allocs, 0, "spaced detection allocated {allocs} times");
@@ -237,21 +294,33 @@ fn reserved_tracking_does_not_allocate_with_varying_points() {
             .track(
                 &points,
                 Some(&predicted),
-                21,
-                30,
-                DEFAULT_MIN_EIGEN_THRESHOLD,
+                TrackParams {
+                    window_size: 21,
+                    max_iterations: 30,
+                    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                },
             )
             .len();
         tracked += ctx
-            .track(&points[..40], None, 15, 10, DEFAULT_MIN_EIGEN_THRESHOLD)
+            .track(
+                &points[..40],
+                None,
+                TrackParams {
+                    window_size: 15,
+                    max_iterations: 10,
+                    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                },
+            )
             .len();
         tracked += ctx
             .track_fb(
                 &points[..150],
                 Some(&predicted[..150]),
-                21,
-                30,
-                DEFAULT_MIN_EIGEN_THRESHOLD,
+                TrackParams {
+                    window_size: 21,
+                    max_iterations: 30,
+                    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                },
                 DEFAULT_FB_THRESHOLD,
             )
             .len();
@@ -260,9 +329,11 @@ fn reserved_tracking_does_not_allocate_with_varying_points() {
             .track_fb(
                 &points,
                 None,
-                7,
-                30,
-                DEFAULT_MIN_EIGEN_THRESHOLD,
+                TrackParams {
+                    window_size: 7,
+                    max_iterations: 30,
+                    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                },
                 DEFAULT_FB_THRESHOLD,
             )
             .len();
@@ -286,9 +357,11 @@ fn steady_state_track_fb_is_allocation_free() {
         ctx.track_fb(
             &points,
             None,
-            15,
-            15,
-            DEFAULT_MIN_EIGEN_THRESHOLD,
+            TrackParams {
+                window_size: 15,
+                max_iterations: 15,
+                min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+            },
             DEFAULT_FB_THRESHOLD,
         );
     }
@@ -297,9 +370,11 @@ fn steady_state_track_fb_is_allocation_free() {
         ctx.track_fb(
             &points,
             None,
-            15,
-            15,
-            DEFAULT_MIN_EIGEN_THRESHOLD,
+            TrackParams {
+                window_size: 15,
+                max_iterations: 15,
+                min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+            },
             DEFAULT_FB_THRESHOLD,
         )
         .len()
@@ -336,7 +411,17 @@ fn reserved_float_detection_does_not_allocate_on_any_content() {
             let image = FloatImageView::new(pixels, *w, *h).unwrap();
             dense = dense.max(ctx.detect(image, threshold, 0).len());
             ctx.detect(image, threshold.with_relative(0.01), 8);
-            ctx.detect_grid(image, 6, 4, 5, threshold, 0, &existing);
+            ctx.detect_grid(
+                image,
+                Grid {
+                    cols: 6,
+                    rows: 4,
+                    max_per_cell: 5,
+                },
+                threshold,
+                0,
+                &existing,
+            );
         }
         dense
     });
@@ -368,12 +453,41 @@ fn reserved_float_tracking_does_not_allocate_with_varying_points() {
             FloatImageView::new(&next, 640, 480).unwrap(),
         );
         ctx.prepare(prev, next, 4);
-        let mut tracked = ctx.track(&points, None, 21, 30, 1e-6).len();
+        let mut tracked = ctx
+            .track(
+                &points,
+                None,
+                TrackParams {
+                    window_size: 21,
+                    max_iterations: 30,
+                    min_eigen_threshold: 1e-6,
+                },
+            )
+            .len();
         tracked += ctx
-            .track_fb(&points[..120], None, 15, 15, 0.0, DEFAULT_FB_THRESHOLD)
+            .track_fb(
+                &points[..120],
+                None,
+                TrackParams {
+                    window_size: 15,
+                    max_iterations: 15,
+                    min_eigen_threshold: 0.0,
+                },
+                DEFAULT_FB_THRESHOLD,
+            )
             .len();
         ctx.prepare(next, prev, 4);
-        tracked += ctx.track(&points[..7], None, 7, 5, 1e-6).len();
+        tracked += ctx
+            .track(
+                &points[..7],
+                None,
+                TrackParams {
+                    window_size: 7,
+                    max_iterations: 5,
+                    min_eigen_threshold: 1e-6,
+                },
+            )
+            .len();
         tracked
     });
     assert_eq!(tracked, 300 + 120 + 7);

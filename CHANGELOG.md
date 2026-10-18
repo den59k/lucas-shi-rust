@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Breaking changes
+
+The next release is therefore 0.5.0.
+
+- Detection returns `Corner { x, y, score }` instead of `(x, y, score)`
+  tuples: `good_features_to_track`, `good_features_to_track_grid`, and
+  `detect` / `detect_grid` of `DetectorContext` and `FloatDetectorContext`.
+  `Corner::position` gives the tracker input; `From` converts to and from the
+  tuple.
+- Grid detection takes a `Grid { cols, rows, max_per_cell }` instead of three
+  positional `u32` arguments.
+- Tracking takes `TrackParams { window_size, max_iterations,
+  min_eigen_threshold }` instead of three positional arguments, two of them
+  `usize`, which could be swapped unnoticed: `calc_optical_flow_ex`,
+  `calc_optical_flow_fb`, and `track` / `track_fb` of `TrackerContext` and
+  `FloatTrackerContext`. `fb_threshold` stays a separate argument.
+- Remove `calc_optical_flow`, deprecated since 0.3.0.
+
+Migration:
+
+```rust
+// 0.4
+let fresh = detector.detect_grid(&img, 6, 4, 3, 0.05, 12, &points);
+let results = ctx.track_fb(&points, None, 21, 30, DEFAULT_MIN_EIGEN_THRESHOLD, DEFAULT_FB_THRESHOLD);
+let positions: Vec<(f32, f32)> = fresh.iter().map(|&(x, y, _)| (x as f32, y as f32)).collect();
+
+// 0.5
+let grid = Grid { cols: 6, rows: 4, max_per_cell: 3 };
+let fresh = detector.detect_grid(&img, grid, 0.05, 12, &points);
+let params = TrackParams {
+    window_size: 21,
+    max_iterations: 30,
+    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+};
+let results = ctx.track_fb(&points, None, params, DEFAULT_FB_THRESHOLD);
+let positions: Vec<(f32, f32)> = fresh.iter().map(Corner::position).collect();
+```
+
 ### Fixed
 
 - `TrackerContext::prepare`, `calc_optical_flow_ex` and `calc_optical_flow_fb`

@@ -1,4 +1,4 @@
-use crate::features::{Detector, DetectorCapacity, DetectorImage, GridLayout, Threshold};
+use crate::features::{Corner, Detector, DetectorCapacity, DetectorImage, Grid, Threshold};
 use crate::float_image::FloatImageView;
 use crate::utils::float_gradients::scharr_f32_into;
 
@@ -125,40 +125,37 @@ impl FloatDetectorContext {
     /// Detects corners scoring at least `threshold`, at least `min_distance`
     /// pixels apart (zero disables spacing), greedily by descending score.
     ///
-    /// Returns `(x, y, score)` from the context's own result buffer; the slice
-    /// is valid until the next call. Images narrower or shorter than three
+    /// Returns [`Corner`]s from the context's own result buffer; the slice is
+    /// valid until the next call. Images narrower or shorter than three
     /// pixels, and flat images, yield no corners.
     pub fn detect(
         &mut self,
         image: FloatImageView<'_>,
         threshold: ScoreThreshold,
         min_distance: u32,
-    ) -> &[(u32, u32, f32)] {
+    ) -> &[Corner] {
         self.detector
             .detect(image, threshold.threshold(), min_distance)
     }
 
-    /// Detects up to `max_per_cell` corners per cell of a `grid_cols` x
-    /// `grid_rows` grid, counting `existing_points` against each cell's budget
-    /// and keeping `min_distance` to them, as
+    /// Detects up to `grid.max_per_cell` corners per cell of `grid`, counting
+    /// `existing_points` against each cell's budget and keeping `min_distance`
+    /// to them, as
     /// [`good_features_to_track_grid`](crate::good_features_to_track_grid) does.
     ///
     /// # Panics
-    /// Panics if `grid_cols` or `grid_rows` is zero.
-    #[allow(clippy::too_many_arguments)]
+    /// Panics if `grid.cols` or `grid.rows` is zero.
     pub fn detect_grid(
         &mut self,
         image: FloatImageView<'_>,
-        grid_cols: u32,
-        grid_rows: u32,
-        max_per_cell: u32,
+        grid: Grid,
         threshold: ScoreThreshold,
         min_distance: u32,
         existing_points: &[(f32, f32)],
-    ) -> &[(u32, u32, f32)] {
+    ) -> &[Corner] {
         self.detector.detect_grid(
             image,
-            GridLayout::new(grid_cols, grid_rows, max_per_cell),
+            grid,
             threshold.threshold(),
             min_distance,
             existing_points,

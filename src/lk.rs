@@ -9,8 +9,7 @@ use crate::utils::float_gradients::scharr_f32;
 /// One level of an f32 image pyramid, as built by [`FloatTrackerContext`].
 pub type FloatPyramidLevel = ImageBuffer<Luma<f32>, Vec<f32>>;
 
-/// Default minimum-eigenvalue threshold of the 8-bit tracker, used by
-/// [`calc_optical_flow`].
+/// Default [`TrackParams::min_eigen_threshold`] of the 8-bit tracker.
 ///
 /// The minimum eigenvalue of the per-window spatial gradient matrix is
 /// normalized by the window area before comparison, so this threshold is
@@ -60,6 +59,34 @@ pub enum TrackStatus {
 /// [`calc_optical_flow_fb`].
 pub const DEFAULT_FB_THRESHOLD: f32 = 0.7;
 
+/// Lucas-Kanade parameters of a tracking call.
+///
+/// The fields are named so that they cannot be swapped unnoticed. For 8-bit
+/// images, for example:
+///
+/// ```
+/// use optical_flow_lk::{DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams};
+///
+/// let params = TrackParams {
+///     window_size: 21,
+///     max_iterations: 30,
+///     min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+/// };
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrackParams {
+    /// Side of the square search window in pixels; must be odd.
+    pub window_size: usize,
+    /// Most iterations per pyramid level, see [`CONVERGENCE_EPSILON`].
+    pub max_iterations: usize,
+    /// Windows whose minimum gradient eigenvalue, normalized by the window
+    /// area, is below this value are reported as [`TrackStatus::LowTexture`].
+    /// In (grey levels / pixel)^2 for 8-bit images, see
+    /// [`DEFAULT_MIN_EIGEN_THRESHOLD`]; in (input unit / pixel)^2 for the f32
+    /// tracker, which has no default.
+    pub min_eigen_threshold: f32,
+}
+
 /// Per-point result of [`calc_optical_flow_ex`].
 ///
 /// # Coordinate convention
@@ -83,45 +110,6 @@ pub struct TrackResult {
     pub error: f32,
 }
 
-/// Compute optical flow using the pyramidal Lucas-Kanade method.
-///
-/// This is a thin wrapper over [`calc_optical_flow_ex`] that discards the
-/// per-point diagnostics.
-///
-/// # Arguments
-/// * `prev_pyramid` - Previous frame (pyramid of grayscale)
-/// * `curr_pyramid` - Next frame (pyramid of grayscale)
-/// * `prev_points` - Feature points to track (in prev frame)
-/// * `window_size` - Size of the search window (odd number)
-/// * `max_iterations` - Max iterations for correct points on each layer
-///
-/// # Returns
-/// Vector of points on next frame
-#[deprecated(
-    since = "0.3.0",
-    note = "use `calc_optical_flow_ex`, which also returns per-point status and error"
-)]
-pub fn calc_optical_flow(
-    prev_pyramid: &[GrayImage],
-    curr_pyramid: &[GrayImage],
-    prev_points: &[(f32, f32)],
-    window_size: usize,
-    max_iterations: usize,
-) -> Vec<(f32, f32)> {
-    calc_optical_flow_ex(
-        prev_pyramid,
-        curr_pyramid,
-        prev_points,
-        None,
-        window_size,
-        max_iterations,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    )
-    .into_iter()
-    .map(|r| r.pos)
-    .collect()
-}
-
 /// Compute optical flow using the pyramidal Lucas-Kanade method, returning a
 /// per-point [`TrackResult`] with status and photometric error.
 ///
@@ -135,15 +123,13 @@ pub fn calc_optical_flow(
 ///   zero, which markedly improves convergence under large inter-frame motion
 ///   (e.g. gyroscope-predicted feature motion). `None` reproduces the classic
 ///   zero-initialized behavior. Per-level propagation is unchanged.
-/// * `window_size` - Size of the search window (odd number)
-/// * `max_iterations` - Max iterations per pyramid level
-/// * `min_eigen_threshold` - Windows whose normalized minimum gradient
-///   eigenvalue is below this value are reported as [`TrackStatus::LowTexture`].
-///   See [`DEFAULT_MIN_EIGEN_THRESHOLD`].
+/// * `params` - window size, iterations and texture threshold, see
+///   [`TrackParams`]
 ///
 /// # Panics
-/// Panics if the pyramids differ in level count or level sizes, or if
-/// `predicted` is `Some` but its length differs from `prev_points`.
+/// Panics if the pyramids differ in level count or level sizes, if
+/// `params.window_size` is even, or if `predicted` is `Some` but its length
+/// differs from `prev_points`.
 ///
 /// # Returns
 /// One [`TrackResult`] per input point, in the same order.
@@ -152,9 +138,7 @@ pub fn calc_optical_flow_ex(
     curr_pyramid: &[GrayImage],
     prev_points: &[(f32, f32)],
     predicted: Option<&[(f32, f32)]>,
-    window_size: usize,
-    max_iterations: usize,
-    min_eigen_threshold: f32,
+    params: TrackParams,
 ) -> Vec<TrackResult> {
     let mut scratch = Scratch::default();
     let mut out = Vec::new();
@@ -163,9 +147,7 @@ pub fn calc_optical_flow_ex(
         curr_pyramid,
         prev_points,
         predicted,
-        window_size,
-        max_iterations,
-        min_eigen_threshold,
+        params,
         &mut scratch,
         &mut out,
     );
@@ -201,15 +183,12 @@ impl<G> Scratch<G> {
 /// Core pyramidal Lucas-Kanade loop, writing one [`TrackResult`] per point into
 /// `out`. All temporaries live in `scratch`; given sufficient capacity this is
 /// allocation-free.
-#[allow(clippy::too_many_arguments)]
 fn track_into<I: TrackImage>(
     prev_pyramid: &[I],
     curr_pyramid: &[I],
     prev_points: &[(f32, f32)],
     predicted: Option<&[(f32, f32)]>,
-    window_size: usize,
-    max_iterations: usize,
-    min_eigen_threshold: f32,
+    params: TrackParams,
     scratch: &mut Scratch<I::Gradient>,
     out: &mut Vec<TrackResult>,
 ) {
@@ -225,6 +204,11 @@ fn track_into<I: TrackImage>(
             .all(|(prev, curr)| prev.dimensions() == curr.dimensions()),
         "both pyramids must have the same level sizes"
     );
+    let TrackParams {
+        window_size,
+        max_iterations,
+        min_eigen_threshold,
+    } = params;
     assert!(window_size % 2 == 1, "Window size must be odd");
     if let Some(predicted) = predicted {
         assert_eq!(
@@ -883,22 +867,18 @@ fn window_error<I: TrackImage>(lv: &Level<I>, cx: f32, cy: f32, prev_patch: &[f3
 /// * `prev_points` - points to track (level-0 coordinates)
 /// * `predicted` - optional initial guess for the forward pass, see
 ///   [`calc_optical_flow_ex`]
-/// * `window_size`, `max_iterations`, `min_eigen_threshold` - as in
-///   [`calc_optical_flow_ex`]
+/// * `params` - as in [`calc_optical_flow_ex`]
 /// * `fb_threshold` - maximum allowed round-trip distance in pixels; see
 ///   [`DEFAULT_FB_THRESHOLD`]
 ///
 /// # Panics
 /// As [`calc_optical_flow_ex`].
-#[allow(clippy::too_many_arguments)]
 pub fn calc_optical_flow_fb(
     prev_pyramid: &[GrayImage],
     next_pyramid: &[GrayImage],
     prev_points: &[(f32, f32)],
     predicted: Option<&[(f32, f32)]>,
-    window_size: usize,
-    max_iterations: usize,
-    min_eigen_threshold: f32,
+    params: TrackParams,
     fb_threshold: f32,
 ) -> Vec<TrackResult> {
     let mut scratch = Scratch::default();
@@ -908,9 +888,7 @@ pub fn calc_optical_flow_fb(
         next_pyramid,
         prev_points,
         predicted,
-        window_size,
-        max_iterations,
-        min_eigen_threshold,
+        params,
         &mut scratch,
         &mut forward,
     );
@@ -926,9 +904,7 @@ pub fn calc_optical_flow_fb(
         prev_pyramid,
         &forward_pos,
         Some(prev_points),
-        window_size,
-        max_iterations,
-        min_eigen_threshold,
+        params,
         &mut scratch,
         &mut backward,
     );
@@ -1160,18 +1136,14 @@ impl<I: TrackImage> Tracker<I> {
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
-        window_size: usize,
-        max_iterations: usize,
-        min_eigen_threshold: f32,
+        params: TrackParams,
     ) -> &[TrackResult] {
         track_into(
             &self.prev_pyramid,
             &self.next_pyramid,
             prev_points,
             predicted,
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
+            params,
             &mut self.scratch,
             &mut self.results,
         );
@@ -1182,9 +1154,7 @@ impl<I: TrackImage> Tracker<I> {
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
-        window_size: usize,
-        max_iterations: usize,
-        min_eigen_threshold: f32,
+        params: TrackParams,
         fb_threshold: f32,
     ) -> &[TrackResult] {
         track_into(
@@ -1192,9 +1162,7 @@ impl<I: TrackImage> Tracker<I> {
             &self.next_pyramid,
             prev_points,
             predicted,
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
+            params,
             &mut self.scratch,
             &mut self.results,
         );
@@ -1208,9 +1176,7 @@ impl<I: TrackImage> Tracker<I> {
             &self.prev_pyramid,
             &self.forward_pos,
             Some(prev_points),
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
+            params,
             &mut self.scratch,
             &mut self.backward,
         );
@@ -1292,17 +1258,9 @@ impl TrackerContext {
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
-        window_size: usize,
-        max_iterations: usize,
-        min_eigen_threshold: f32,
+        params: TrackParams,
     ) -> &[TrackResult] {
-        self.tracker.track(
-            prev_points,
-            predicted,
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
-        )
+        self.tracker.track(prev_points, predicted, params)
     }
 
     /// Forward-backward consistent tracking using the prepared pyramids. See
@@ -1312,19 +1270,11 @@ impl TrackerContext {
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
-        window_size: usize,
-        max_iterations: usize,
-        min_eigen_threshold: f32,
+        params: TrackParams,
         fb_threshold: f32,
     ) -> &[TrackResult] {
-        self.tracker.track_fb(
-            prev_points,
-            predicted,
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
-            fb_threshold,
-        )
+        self.tracker
+            .track_fb(prev_points, predicted, params, fb_threshold)
     }
 }
 
@@ -1341,8 +1291,8 @@ impl TrackerContext {
 /// two trackers agree closely but not bit for bit.
 ///
 /// Units follow the image:
-/// - `min_eigen_threshold` is in (input unit / pixel)^2, the unit of the f32
-///   detector's scores, and has no default. A window whose mean minimum
+/// - [`TrackParams::min_eigen_threshold`] is in (input unit / pixel)^2, the
+///   unit of the f32 detector's scores, and has no default. A window whose mean minimum
 ///   gradient eigenvalue is below it is [`TrackStatus::LowTexture`]. Windows
 ///   whose eigenvalue ratio is below f32 resolution are low texture as well,
 ///   at any contrast: the singularity test is relative, so small physical
@@ -1403,28 +1353,20 @@ impl FloatTrackerContext {
     }
 
     /// Tracks `prev_points` from the previous into the next frame, as
-    /// [`calc_optical_flow_ex`] does. `min_eigen_threshold` is in
+    /// [`calc_optical_flow_ex`] does. `params.min_eigen_threshold` is in
     /// (input unit / pixel)^2. Returns one result per point, in order, from
     /// the context's own buffer.
     ///
     /// # Panics
-    /// Panics if `prepare` was not called, `window_size` is even, or
+    /// Panics if `prepare` was not called, `params.window_size` is even, or
     /// `predicted` has a different length than `prev_points`.
     pub fn track(
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
-        window_size: usize,
-        max_iterations: usize,
-        min_eigen_threshold: f32,
+        params: TrackParams,
     ) -> &[TrackResult] {
-        self.tracker.track(
-            prev_points,
-            predicted,
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
-        )
+        self.tracker.track(prev_points, predicted, params)
     }
 
     /// Forward-backward consistent tracking, as [`calc_optical_flow_fb`]
@@ -1436,19 +1378,11 @@ impl FloatTrackerContext {
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
-        window_size: usize,
-        max_iterations: usize,
-        min_eigen_threshold: f32,
+        params: TrackParams,
         fb_threshold: f32,
     ) -> &[TrackResult] {
-        self.tracker.track_fb(
-            prev_points,
-            predicted,
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
-            fb_threshold,
-        )
+        self.tracker
+            .track_fb(prev_points, predicted, params, fb_threshold)
     }
 }
 

@@ -18,7 +18,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, DetectorContext, FloatDetectorContext,
-    FloatImageView, FloatTrackerContext, ScoreThreshold, TrackStatus, TrackerContext,
+    FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackParams, TrackStatus,
+    TrackerContext,
 };
 
 #[path = "support/feature_inputs.rs"]
@@ -196,16 +197,28 @@ fn bench_detection(c: &mut Criterion) {
             u8_ctx
                 .detect_grid(
                     &frame.gray,
-                    cols,
-                    rows,
-                    budget,
+                    Grid {
+                        cols,
+                        rows,
+                        max_per_cell: budget,
+                    },
                     QUALITY,
                     MIN_DISTANCE,
                     &existing,
                 )
                 .len(),
             f32_ctx
-                .detect_grid(view, cols, rows, budget, threshold, MIN_DISTANCE, &existing)
+                .detect_grid(
+                    view,
+                    Grid {
+                        cols,
+                        rows,
+                        max_per_cell: budget,
+                    },
+                    threshold,
+                    MIN_DISTANCE,
+                    &existing,
+                )
                 .len(),
         );
         eprintln!(
@@ -236,7 +249,17 @@ fn bench_detection(c: &mut Criterion) {
                 let image = black_box(&frame.gray);
                 black_box(
                     u8_ctx
-                        .detect_grid(image, cols, rows, budget, QUALITY, MIN_DISTANCE, &existing)
+                        .detect_grid(
+                            image,
+                            Grid {
+                                cols,
+                                rows,
+                                max_per_cell: budget,
+                            },
+                            QUALITY,
+                            MIN_DISTANCE,
+                            &existing,
+                        )
                         .len(),
                 )
             })
@@ -250,9 +273,11 @@ fn bench_detection(c: &mut Criterion) {
                         f32_ctx
                             .detect_grid(
                                 image,
-                                cols,
-                                rows,
-                                budget,
+                                Grid {
+                                    cols,
+                                    rows,
+                                    max_per_cell: budget,
+                                },
                                 threshold,
                                 MIN_DISTANCE,
                                 &existing,
@@ -307,7 +332,16 @@ fn bench_tracking(c: &mut Criterion) {
         let (prev_view, next_view) = (prev.view(), next.view());
         for (config, levels, window, iterations, n) in TRACKING {
             let points = lattice(n);
-            let min_eigen = prev.min_eigen();
+            let u8_params = TrackParams {
+                window_size: window,
+                max_iterations: iterations,
+                min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+            };
+            // The f32 threshold is in the frame's own unit.
+            let f32_params = TrackParams {
+                min_eigen_threshold: prev.min_eigen(),
+                ..u8_params
+            };
             u8_ctx.prepare(&prev.gray, &next.gray, levels);
             f32_ctx.prepare(prev_view, next_view, levels);
             // Tracked count and mean position error against the true (3, 2) px
@@ -324,22 +358,8 @@ fn bench_tracking(c: &mut Criterion) {
                 let mean = errors.iter().sum::<f32>() / errors.len().max(1) as f32;
                 format!("{} ({mean:.3} px)", errors.len())
             };
-            let u8_fb = quality(u8_ctx.track_fb(
-                &points,
-                None,
-                window,
-                iterations,
-                DEFAULT_MIN_EIGEN_THRESHOLD,
-                DEFAULT_FB_THRESHOLD,
-            ));
-            let f32_fb = quality(f32_ctx.track_fb(
-                &points,
-                None,
-                window,
-                iterations,
-                min_eigen,
-                DEFAULT_FB_THRESHOLD,
-            ));
+            let u8_fb = quality(u8_ctx.track_fb(&points, None, u8_params, DEFAULT_FB_THRESHOLD));
+            let f32_fb = quality(f32_ctx.track_fb(&points, None, f32_params, DEFAULT_FB_THRESHOLD));
             eprintln!(
                 "float_vs_u8: case={name}, tracking={config}, points={n}, tracked_fb u8={u8_fb} f32={f32_fb}"
             );
@@ -356,41 +376,16 @@ fn bench_tracking(c: &mut Criterion) {
             u8_ctx.prepare(&prev.gray, &next.gray, levels);
             f32_ctx.prepare(prev_view, next_view, levels);
             group.bench_function(id("track", "u8"), |b| {
-                b.iter(|| {
-                    black_box(
-                        u8_ctx
-                            .track(
-                                black_box(&points),
-                                None,
-                                window,
-                                iterations,
-                                DEFAULT_MIN_EIGEN_THRESHOLD,
-                            )
-                            .len(),
-                    )
-                })
+                b.iter(|| black_box(u8_ctx.track(black_box(&points), None, u8_params).len()))
             });
             group.bench_function(id("track", "f32"), |b| {
-                b.iter(|| {
-                    black_box(
-                        f32_ctx
-                            .track(black_box(&points), None, window, iterations, min_eigen)
-                            .len(),
-                    )
-                })
+                b.iter(|| black_box(f32_ctx.track(black_box(&points), None, f32_params).len()))
             });
             group.bench_function(id("track_fb", "u8"), |b| {
                 b.iter(|| {
                     black_box(
                         u8_ctx
-                            .track_fb(
-                                black_box(&points),
-                                None,
-                                window,
-                                iterations,
-                                DEFAULT_MIN_EIGEN_THRESHOLD,
-                                DEFAULT_FB_THRESHOLD,
-                            )
+                            .track_fb(black_box(&points), None, u8_params, DEFAULT_FB_THRESHOLD)
                             .len(),
                     )
                 })
@@ -399,14 +394,7 @@ fn bench_tracking(c: &mut Criterion) {
                 b.iter(|| {
                     black_box(
                         f32_ctx
-                            .track_fb(
-                                black_box(&points),
-                                None,
-                                window,
-                                iterations,
-                                min_eigen,
-                                DEFAULT_FB_THRESHOLD,
-                            )
+                            .track_fb(black_box(&points), None, f32_params, DEFAULT_FB_THRESHOLD)
                             .len(),
                     )
                 })
@@ -427,14 +415,7 @@ fn bench_tracking(c: &mut Criterion) {
                         thermal_to_gray(black_box(&next.celsius_or_values), &mut gray);
                     }
                     u8_ctx.prepare(&prev.gray, &gray, levels);
-                    let results = u8_ctx.track_fb(
-                        &points,
-                        None,
-                        window,
-                        iterations,
-                        DEFAULT_MIN_EIGEN_THRESHOLD,
-                        DEFAULT_FB_THRESHOLD,
-                    );
+                    let results = u8_ctx.track_fb(&points, None, u8_params, DEFAULT_FB_THRESHOLD);
                     survivors.clear();
                     survivors.extend(
                         results
@@ -446,9 +427,11 @@ fn bench_tracking(c: &mut Criterion) {
                         u8_detector
                             .detect_grid(
                                 &gray,
-                                cols,
-                                rows,
-                                budget,
+                                Grid {
+                                    cols,
+                                    rows,
+                                    max_per_cell: budget,
+                                },
                                 QUALITY,
                                 MIN_DISTANCE,
                                 &survivors,
@@ -464,14 +447,7 @@ fn bench_tracking(c: &mut Criterion) {
                     let next_view =
                         FloatImageView::new(black_box(&next.celsius_or_values), w, h).unwrap();
                     f32_ctx.prepare(prev_view, next_view, levels);
-                    let results = f32_ctx.track_fb(
-                        &points,
-                        None,
-                        window,
-                        iterations,
-                        min_eigen,
-                        DEFAULT_FB_THRESHOLD,
-                    );
+                    let results = f32_ctx.track_fb(&points, None, f32_params, DEFAULT_FB_THRESHOLD);
                     survivors.clear();
                     survivors.extend(
                         results
@@ -483,9 +459,11 @@ fn bench_tracking(c: &mut Criterion) {
                         f32_detector
                             .detect_grid(
                                 next_view,
-                                cols,
-                                rows,
-                                budget,
+                                Grid {
+                                    cols,
+                                    rows,
+                                    max_per_cell: budget,
+                                },
                                 threshold,
                                 MIN_DISTANCE,
                                 &survivors,

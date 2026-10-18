@@ -10,7 +10,7 @@ use std::hint::black_box;
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    DEFAULT_MIN_EIGEN_THRESHOLD, TrackerContext, build_pyramid, calc_optical_flow_ex,
+    DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackerContext, build_pyramid, calc_optical_flow_ex,
 };
 
 const W: u32 = 640;
@@ -18,6 +18,11 @@ const H: u32 = 480;
 const LEVELS: usize = 4;
 const WIN: usize = 21;
 const ITERS: usize = 30;
+const PARAMS: TrackParams = TrackParams {
+    window_size: WIN,
+    max_iterations: ITERS,
+    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+};
 
 fn textured(seed: u32) -> GrayImage {
     let mut buf: Vec<f32> = (0..(W * H))
@@ -98,32 +103,18 @@ fn bench_tracking(c: &mut Criterion) {
                 b.iter(|| {
                     let pp = build_pyramid(&prev, LEVELS);
                     let np = build_pyramid(&next, LEVELS);
-                    black_box(calc_optical_flow_ex(
-                        &pp,
-                        &np,
-                        &points,
-                        guess_opt,
-                        WIN,
-                        ITERS,
-                        DEFAULT_MIN_EIGEN_THRESHOLD,
-                    ))
+                    black_box(calc_optical_flow_ex(&pp, &np, &points, guess_opt, PARAMS))
                 });
             });
 
             // "after": reuse one warm TrackerContext.
             let mut ctx = TrackerContext::new();
             ctx.prepare(&prev, &next, LEVELS);
-            ctx.track(&points, guess_opt, WIN, ITERS, DEFAULT_MIN_EIGEN_THRESHOLD);
+            ctx.track(&points, guess_opt, PARAMS);
             group.bench_with_input(BenchmarkId::new(format!("after/{tag}"), n), &n, |b, _| {
                 b.iter(|| {
                     ctx.prepare(&prev, &next, LEVELS);
-                    black_box(ctx.track(
-                        &points,
-                        guess_opt,
-                        WIN,
-                        ITERS,
-                        DEFAULT_MIN_EIGEN_THRESHOLD,
-                    ));
+                    black_box(ctx.track(&points, guess_opt, PARAMS));
                 });
             });
         }
