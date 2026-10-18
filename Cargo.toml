@@ -2,6 +2,7 @@
 name = "optical-flow-lk"
 version = "0.4.1"
 edition = "2024"
+rust-version = "1.88"
 authors = ["den59k <den59k@gmail.com>", "Claude <noreply@anthropic.com>"]
 description = "Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi feature detection"
 license = "MIT"

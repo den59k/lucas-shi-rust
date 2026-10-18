@@ -20,7 +20,12 @@
   Pyramid levels reuse their allocation when the frame size changes.
 - Bit-exact regression fixtures for 8-bit detection and tracking and for the
   f32 pipeline, identical on aarch64 and wasm32-wasip1, and a
-  `rust-toolchain.toml` pinning the stable channel.
+  `rust-toolchain.toml` selecting the stable channel with clippy and rustfmt.
+
+### Changed
+
+- Declare the minimum supported Rust version, 1.88, which `image` 0.25.10
+  already requires.
 
 ### Benchmarks
 
