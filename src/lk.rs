@@ -1,14 +1,25 @@
-use image::GrayImage;
+use image::{GrayImage, ImageBuffer, Luma, Pixel};
 
-use crate::pyramid::build_pyramid_into;
+use crate::features::reserve_total;
+use crate::float_image::FloatImageView;
+use crate::pyramid::{build_float_pyramid_into, build_pyramid_into, reserve_pyramid};
 use crate::utils::fast_gradients::compute_gradients_into;
+use crate::utils::float_gradients::scharr_f32;
 
-/// Default minimum-eigenvalue threshold used by [`calc_optical_flow`].
+/// One level of an f32 image pyramid, as built by [`FloatTrackerContext`].
+pub type FloatPyramidLevel = ImageBuffer<Luma<f32>, Vec<f32>>;
+
+/// Default [`TrackParams::min_eigen_threshold`] of the 8-bit tracker.
 ///
 /// The minimum eigenvalue of the per-window spatial gradient matrix is
 /// normalized by the window area before comparison, so this threshold is
-/// independent of `window_size`. A window flatter than this is reported as
-/// [`TrackStatus::LowTexture`].
+/// independent of `window_size`. Its unit is (grey levels / pixel)^2. A window
+/// flatter than this is reported as [`TrackStatus::LowTexture`]. The f32
+/// tracker has no default: its threshold is in the image's own unit.
+///
+/// Thresholds below about 1e-4 are not meaningful: at the strongest 8-bit
+/// edges, f32 rounding of the eigenvalue alone reaches about that size, so
+/// such edges could pass as trackable windows at random.
 pub const DEFAULT_MIN_EIGEN_THRESHOLD: f32 = 1e-3;
 
 /// Per-level convergence threshold, in pixels of the current pyramid level.
@@ -48,6 +59,34 @@ pub enum TrackStatus {
 /// [`calc_optical_flow_fb`].
 pub const DEFAULT_FB_THRESHOLD: f32 = 0.7;
 
+/// Lucas-Kanade parameters of a tracking call.
+///
+/// The fields are named so that they cannot be swapped unnoticed. For 8-bit
+/// images, for example:
+///
+/// ```
+/// use optical_flow_lk::{DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams};
+///
+/// let params = TrackParams {
+///     window_size: 21,
+///     max_iterations: 30,
+///     min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+/// };
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrackParams {
+    /// Side of the square search window in pixels; must be odd.
+    pub window_size: usize,
+    /// Most iterations per pyramid level, see [`CONVERGENCE_EPSILON`].
+    pub max_iterations: usize,
+    /// Windows whose minimum gradient eigenvalue, normalized by the window
+    /// area, is below this value are reported as [`TrackStatus::LowTexture`].
+    /// In (grey levels / pixel)^2 for 8-bit images, see
+    /// [`DEFAULT_MIN_EIGEN_THRESHOLD`]; in (input unit / pixel)^2 for the f32
+    /// tracker, which has no default.
+    pub min_eigen_threshold: f32,
+}
+
 /// Per-point result of [`calc_optical_flow_ex`].
 ///
 /// # Coordinate convention
@@ -62,51 +101,13 @@ pub struct TrackResult {
     /// Why tracking ended the way it did.
     pub status: TrackStatus,
     /// Mean absolute photometric residual over the window at the final
-    /// position, in 8-bit intensity units.
+    /// position, in the input's intensity unit: grey levels for 8-bit images,
+    /// the image's own unit (e.g. °C) for the f32 tracker.
     ///
     /// Comparable across points regardless of `window_size`; intended for
     /// downstream outlier gating. It is [`f32::INFINITY`] when no residual
     /// could be measured (the window was out of bounds).
     pub error: f32,
-}
-
-/// Compute optical flow using the pyramidal Lucas-Kanade method.
-///
-/// This is a thin wrapper over [`calc_optical_flow_ex`] that discards the
-/// per-point diagnostics.
-///
-/// # Arguments
-/// * `prev_pyramid` - Previous frame (pyramid of grayscale)
-/// * `curr_pyramid` - Next frame (pyramid of grayscale)
-/// * `prev_points` - Feature points to track (in prev frame)
-/// * `window_size` - Size of the search window (odd number)
-/// * `max_iterations` - Max iterations for correct points on each layer
-///
-/// # Returns
-/// Vector of points on next frame
-#[deprecated(
-    since = "0.3.0",
-    note = "use `calc_optical_flow_ex`, which also returns per-point status and error"
-)]
-pub fn calc_optical_flow(
-    prev_pyramid: &[GrayImage],
-    curr_pyramid: &[GrayImage],
-    prev_points: &[(f32, f32)],
-    window_size: usize,
-    max_iterations: usize,
-) -> Vec<(f32, f32)> {
-    calc_optical_flow_ex(
-        prev_pyramid,
-        curr_pyramid,
-        prev_points,
-        None,
-        window_size,
-        max_iterations,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    )
-    .into_iter()
-    .map(|r| r.pos)
-    .collect()
 }
 
 /// Compute optical flow using the pyramidal Lucas-Kanade method, returning a
@@ -122,14 +123,13 @@ pub fn calc_optical_flow(
 ///   zero, which markedly improves convergence under large inter-frame motion
 ///   (e.g. gyroscope-predicted feature motion). `None` reproduces the classic
 ///   zero-initialized behavior. Per-level propagation is unchanged.
-/// * `window_size` - Size of the search window (odd number)
-/// * `max_iterations` - Max iterations per pyramid level
-/// * `min_eigen_threshold` - Windows whose normalized minimum gradient
-///   eigenvalue is below this value are reported as [`TrackStatus::LowTexture`].
-///   See [`DEFAULT_MIN_EIGEN_THRESHOLD`].
+/// * `params` - window size, iterations and texture threshold, see
+///   [`TrackParams`]
 ///
 /// # Panics
-/// Panics if `predicted` is `Some` but its length differs from `prev_points`.
+/// Panics if the pyramids differ in level count or level sizes, if
+/// `params.window_size` is even, or if `predicted` is `Some` but its length
+/// differs from `prev_points`.
 ///
 /// # Returns
 /// One [`TrackResult`] per input point, in the same order.
@@ -138,9 +138,7 @@ pub fn calc_optical_flow_ex(
     curr_pyramid: &[GrayImage],
     prev_points: &[(f32, f32)],
     predicted: Option<&[(f32, f32)]>,
-    window_size: usize,
-    max_iterations: usize,
-    min_eigen_threshold: f32,
+    params: TrackParams,
 ) -> Vec<TrackResult> {
     let mut scratch = Scratch::default();
     let mut out = Vec::new();
@@ -149,9 +147,7 @@ pub fn calc_optical_flow_ex(
         curr_pyramid,
         prev_points,
         predicted,
-        window_size,
-        max_iterations,
-        min_eigen_threshold,
+        params,
         &mut scratch,
         &mut out,
     );
@@ -162,28 +158,38 @@ pub fn calc_optical_flow_ex(
 /// [`TrackerContext`] (or created transiently by the free functions) so the
 /// steady-state hot path performs no heap allocation.
 #[derive(Default)]
-struct Scratch {
+struct Scratch<G> {
     prev_patch: Vec<f32>,
     ix_patch: Vec<f32>,
     iy_patch: Vec<f32>,
     displacements: Vec<(f32, f32)>,
-    grad_x: Vec<i16>,
-    grad_y: Vec<i16>,
+    grad_x: Vec<G>,
+    grad_y: Vec<G>,
+}
+
+impl<G> Scratch<G> {
+    fn reserve(&mut self, capacity: &TrackerCapacity) {
+        let patch = capacity.window_size * capacity.window_size;
+        for buffer in [&mut self.prev_patch, &mut self.ix_patch, &mut self.iy_patch] {
+            reserve_total(buffer, patch);
+        }
+        reserve_total(&mut self.displacements, capacity.points);
+        let pixels = capacity.width as usize * capacity.height as usize;
+        reserve_total(&mut self.grad_x, pixels);
+        reserve_total(&mut self.grad_y, pixels);
+    }
 }
 
 /// Core pyramidal Lucas-Kanade loop, writing one [`TrackResult`] per point into
 /// `out`. All temporaries live in `scratch`; given sufficient capacity this is
 /// allocation-free.
-#[allow(clippy::too_many_arguments)]
-fn track_into(
-    prev_pyramid: &[GrayImage],
-    curr_pyramid: &[GrayImage],
+fn track_into<I: TrackImage>(
+    prev_pyramid: &[I],
+    curr_pyramid: &[I],
     prev_points: &[(f32, f32)],
     predicted: Option<&[(f32, f32)]>,
-    window_size: usize,
-    max_iterations: usize,
-    min_eigen_threshold: f32,
-    scratch: &mut Scratch,
+    params: TrackParams,
+    scratch: &mut Scratch<I::Gradient>,
     out: &mut Vec<TrackResult>,
 ) {
     assert_eq!(prev_pyramid.len(), curr_pyramid.len());
@@ -191,6 +197,18 @@ fn track_into(
         !prev_pyramid.is_empty(),
         "pyramid must have at least 1 level"
     );
+    assert!(
+        prev_pyramid
+            .iter()
+            .zip(curr_pyramid)
+            .all(|(prev, curr)| prev.dimensions() == curr.dimensions()),
+        "both pyramids must have the same level sizes"
+    );
+    let TrackParams {
+        window_size,
+        max_iterations,
+        min_eigen_threshold,
+    } = params;
     assert!(window_size % 2 == 1, "Window size must be odd");
     if let Some(predicted) = predicted {
         assert_eq!(
@@ -236,8 +254,8 @@ fn track_into(
     // One shared gradient buffer sized to the largest (level-0) image; smaller
     // levels use a prefix slice.
     let (w0, h0) = prev_pyramid[0].dimensions();
-    grad_x_buf.resize((w0 * h0) as usize, 0);
-    grad_y_buf.resize((w0 * h0) as usize, 0);
+    grad_x_buf.resize((w0 * h0) as usize, Default::default());
+    grad_y_buf.resize((w0 * h0) as usize, Default::default());
 
     // Initialize results at the input positions; the loop refines them in place.
     out.clear();
@@ -256,15 +274,14 @@ fn track_into(
         let (lw, lh) = prev_img.dimensions();
         let level_pixels = (lw * lh) as usize;
 
-        compute_gradients_into(
-            prev_img,
+        prev_img.gradients_into(
             &mut grad_x_buf[..level_pixels],
             &mut grad_y_buf[..level_pixels],
         );
 
-        let level = Level {
-            prev: prev_img.as_raw(),
-            curr: curr_img.as_raw(),
+        let level = Level::<I> {
+            prev: prev_img.pixels(),
+            curr: curr_img.pixels(),
             grad_x: &grad_x_buf[..level_pixels],
             grad_y: &grad_y_buf[..level_pixels],
             width: lw as usize,
@@ -296,11 +313,11 @@ fn track_into(
 }
 
 /// Everything the per-level loop needs about one pyramid level.
-struct Level<'a> {
-    prev: &'a [u8],
-    curr: &'a [u8],
-    grad_x: &'a [i16],
-    grad_y: &'a [i16],
+struct Level<'a, I: TrackImage> {
+    prev: &'a [I::Pixel],
+    curr: &'a [I::Pixel],
+    grad_x: &'a [I::Gradient],
+    grad_y: &'a [I::Gradient],
     width: usize,
     height: usize,
     scale: f32,
@@ -331,9 +348,9 @@ impl Kernel {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn track_level(
+    fn track_level<I: TrackImage>(
         self,
-        level: &Level,
+        level: &Level<I>,
         prev_points: &[(f32, f32)],
         displacements: &mut [(f32, f32)],
         prev_patch: &mut [f32],
@@ -371,8 +388,8 @@ impl Kernel {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
 #[allow(clippy::too_many_arguments)]
-unsafe fn track_level_avx2(
-    level: &Level,
+unsafe fn track_level_avx2<I: TrackImage>(
+    level: &Level<I>,
     prev_points: &[(f32, f32)],
     displacements: &mut [(f32, f32)],
     prev_patch: &mut [f32],
@@ -394,8 +411,8 @@ unsafe fn track_level_avx2(
 /// Refines every point's displacement at one pyramid level.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
-fn track_level_impl(
-    lv: &Level,
+fn track_level_impl<I: TrackImage>(
+    lv: &Level<I>,
     prev_points: &[(f32, f32)],
     displacements: &mut [(f32, f32)],
     prev_patch: &mut [f32],
@@ -404,7 +421,6 @@ fn track_level_impl(
     out: &mut [TrackResult],
 ) {
     let n_pixels = lv.window_size * lv.window_size;
-    let det_epsilon = 1e-6;
     let window_limit = lv.window_size as f32;
 
     for (idx, &(prev_x, prev_y)) in prev_points.iter().enumerate() {
@@ -427,19 +443,17 @@ fn track_level_impl(
 
         // Reject low-texture windows up front (normalized by window area so
         // the threshold does not depend on `window_size`).
-        let min_eig = min_eigenvalue(gxx, gxy, gyy) / n_pixels as f32;
-        if min_eig < lv.min_eigen_threshold {
-            out[idx].status = TrackStatus::LowTexture;
-            if lv.is_finest {
-                out[idx].error = window_error(lv, x + dx, y + dy, prev_patch);
-            }
-            continue;
-        }
-
-        let Some((inv_h00, inv_h01, inv_h11)) = invert_2x2(gxx, gxy, gyy, det_epsilon) else {
-            out[idx].status = TrackStatus::LowTexture;
-            continue;
-        };
+        let (inv_h00, inv_h01, inv_h11) =
+            match I::spatial_inverse(gxx, gxy, gyy, n_pixels, lv.min_eigen_threshold) {
+                Spatial::Invertible(inverse) => inverse,
+                Spatial::LowTexture { measure_error } => {
+                    out[idx].status = TrackStatus::LowTexture;
+                    if measure_error && lv.is_finest {
+                        out[idx].error = window_error(lv, x + dx, y + dy, prev_patch);
+                    }
+                    continue;
+                }
+            };
 
         // Refine the displacement at the current level.
         let mut converged = false;
@@ -601,8 +615,8 @@ fn total<const L: usize>(acc: &[f32; L]) -> f32 {
 /// Fills the previous-image and gradient patches for `win` and returns the
 /// spatial gradient matrix `(gxx, gxy, gyy)`.
 #[inline(always)]
-fn build_patch(
-    lv: &Level,
+fn build_patch<I: TrackImage>(
+    lv: &Level<I>,
     win: &Window,
     prev_patch: &mut [f32],
     ix_patch: &mut [f32],
@@ -610,20 +624,20 @@ fn build_patch(
 ) -> (f32, f32, f32) {
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
-    fn lanes<const L: usize>(
+    fn lanes<P: Copy + Into<f32>, G: Copy + Into<f32>, const L: usize>(
         win: &Window,
         gwin: &Window,
-        (pa, pb): (&[u8], &[u8]),
-        (xa, xb): (&[i16], &[i16]),
-        (ya, yb): (&[i16], &[i16]),
+        (pa, pb): (&[P], &[P]),
+        (xa, xb): (&[G], &[G]),
+        (ya, yb): (&[G], &[G]),
         p: &mut [f32],
         ox: &mut [f32],
         oy: &mut [f32],
         acc: &mut [[f32; L]; 3],
     ) {
-        let s = sample_lanes::<u8, L>(win, pa, pb);
-        let sx = sample_lanes::<i16, L>(gwin, xa, xb);
-        let sy = sample_lanes::<i16, L>(gwin, ya, yb);
+        let s = sample_lanes::<P, L>(win, pa, pb);
+        let sx = sample_lanes::<G, L>(gwin, xa, xb);
+        let sy = sample_lanes::<G, L>(gwin, ya, yb);
         let p: &mut [f32; L] = (&mut p[..L]).try_into().unwrap();
         let ox: &mut [f32; L] = (&mut ox[..L]).try_into().unwrap();
         let oy: &mut [f32; L] = (&mut oy[..L]).try_into().unwrap();
@@ -638,7 +652,7 @@ fn build_patch(
     }
 
     let size = lv.window_size;
-    // Scharr outputs are 32x the intensity slope.
+    // Scharr outputs are 32x the intensity slope for both image types.
     let gwin = win.scaled(1.0 / 32.0);
     let mut acc8 = [[0f32; 8]; 3];
     let mut acc4 = [[0f32; 4]; 3];
@@ -654,7 +668,7 @@ fn build_patch(
 
         let mut i = 0;
         while i + 8 <= size {
-            lanes::<8>(
+            lanes::<_, _, 8>(
                 win,
                 &gwin,
                 (&pa[i..], &pb[i..]),
@@ -668,7 +682,7 @@ fn build_patch(
             i += 8;
         }
         if i + 4 <= size {
-            lanes::<4>(
+            lanes::<_, _, 4>(
                 win,
                 &gwin,
                 (&pa[i..], &pb[i..]),
@@ -682,7 +696,7 @@ fn build_patch(
             i += 4;
         }
         while i < size {
-            lanes::<1>(
+            lanes::<_, _, 1>(
                 win,
                 &gwin,
                 (&pa[i..], &pb[i..]),
@@ -707,23 +721,23 @@ fn build_patch(
 /// One Lucas-Kanade update: the gradient-weighted residual `(bx, by)` between
 /// the cached previous patch and the next image sampled at `win`.
 #[inline(always)]
-fn lk_step(
-    lv: &Level,
+fn lk_step<I: TrackImage>(
+    lv: &Level<I>,
     win: &Window,
     prev_patch: &[f32],
     ix_patch: &[f32],
     iy_patch: &[f32],
 ) -> (f32, f32) {
     #[inline(always)]
-    fn lanes<const L: usize>(
+    fn lanes<P: Copy + Into<f32>, const L: usize>(
         win: &Window,
-        (a, b): (&[u8], &[u8]),
+        (a, b): (&[P], &[P]),
         p: &[f32],
         gx: &[f32],
         gy: &[f32],
         acc: &mut [[f32; L]; 2],
     ) {
-        let s = sample_lanes::<u8, L>(win, a, b);
+        let s = sample_lanes::<P, L>(win, a, b);
         let p: &[f32; L] = p[..L].try_into().unwrap();
         let gx: &[f32; L] = gx[..L].try_into().unwrap();
         let gy: &[f32; L] = gy[..L].try_into().unwrap();
@@ -747,7 +761,7 @@ fn lk_step(
 
         let mut i = 0;
         while i + 8 <= size {
-            lanes::<8>(
+            lanes::<_, 8>(
                 win,
                 (&a[i..], &b[i..]),
                 &p[i..],
@@ -758,7 +772,7 @@ fn lk_step(
             i += 8;
         }
         if i + 4 <= size {
-            lanes::<4>(
+            lanes::<_, 4>(
                 win,
                 (&a[i..], &b[i..]),
                 &p[i..],
@@ -769,7 +783,7 @@ fn lk_step(
             i += 4;
         }
         while i < size {
-            lanes::<1>(
+            lanes::<_, 1>(
                 win,
                 (&a[i..], &b[i..]),
                 &p[i..],
@@ -791,10 +805,15 @@ fn lk_step(
 /// next image sampled around `(cx, cy)`. Returns [`f32::INFINITY`] if the window
 /// is out of bounds.
 #[inline(always)]
-fn window_error(lv: &Level, cx: f32, cy: f32, prev_patch: &[f32]) -> f32 {
+fn window_error<I: TrackImage>(lv: &Level<I>, cx: f32, cy: f32, prev_patch: &[f32]) -> f32 {
     #[inline(always)]
-    fn lanes<const L: usize>(win: &Window, (a, b): (&[u8], &[u8]), p: &[f32], acc: &mut [f32; L]) {
-        let s = sample_lanes::<u8, L>(win, a, b);
+    fn lanes<P: Copy + Into<f32>, const L: usize>(
+        win: &Window,
+        (a, b): (&[P], &[P]),
+        p: &[f32],
+        acc: &mut [f32; L],
+    ) {
+        let s = sample_lanes::<P, L>(win, a, b);
         let p: &[f32; L] = p[..L].try_into().unwrap();
         for k in 0..L {
             acc[k] += (p[k] - s[k]).abs();
@@ -814,15 +833,15 @@ fn window_error(lv: &Level, cx: f32, cy: f32, prev_patch: &[f32]) -> f32 {
         let p = &prev_patch[j * size..][..size];
         let mut i = 0;
         while i + 8 <= size {
-            lanes::<8>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc8);
+            lanes::<_, 8>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc8);
             i += 8;
         }
         if i + 4 <= size {
-            lanes::<4>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc4);
+            lanes::<_, 4>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc4);
             i += 4;
         }
         while i < size {
-            lanes::<1>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc1);
+            lanes::<_, 1>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc1);
             i += 1;
         }
     }
@@ -848,19 +867,18 @@ fn window_error(lv: &Level, cx: f32, cy: f32, prev_patch: &[f32]) -> f32 {
 /// * `prev_points` - points to track (level-0 coordinates)
 /// * `predicted` - optional initial guess for the forward pass, see
 ///   [`calc_optical_flow_ex`]
-/// * `window_size`, `max_iterations`, `min_eigen_threshold` - as in
-///   [`calc_optical_flow_ex`]
+/// * `params` - as in [`calc_optical_flow_ex`]
 /// * `fb_threshold` - maximum allowed round-trip distance in pixels; see
 ///   [`DEFAULT_FB_THRESHOLD`]
-#[allow(clippy::too_many_arguments)]
+///
+/// # Panics
+/// As [`calc_optical_flow_ex`].
 pub fn calc_optical_flow_fb(
     prev_pyramid: &[GrayImage],
     next_pyramid: &[GrayImage],
     prev_points: &[(f32, f32)],
     predicted: Option<&[(f32, f32)]>,
-    window_size: usize,
-    max_iterations: usize,
-    min_eigen_threshold: f32,
+    params: TrackParams,
     fb_threshold: f32,
 ) -> Vec<TrackResult> {
     let mut scratch = Scratch::default();
@@ -870,9 +888,7 @@ pub fn calc_optical_flow_fb(
         next_pyramid,
         prev_points,
         predicted,
-        window_size,
-        max_iterations,
-        min_eigen_threshold,
+        params,
         &mut scratch,
         &mut forward,
     );
@@ -888,9 +904,7 @@ pub fn calc_optical_flow_fb(
         prev_pyramid,
         &forward_pos,
         Some(prev_points),
-        window_size,
-        max_iterations,
-        min_eigen_threshold,
+        params,
         &mut scratch,
         &mut backward,
     );
@@ -941,88 +955,206 @@ fn invert_2x2(a00: f32, a01: f32, a11: f32, det_epsilon: f32) -> Option<(f32, f3
     Some((a11 * inv_det, -a01 * inv_det, a00 * inv_det))
 }
 
-/// Reusable owner of every buffer the tracking hot path touches: both frame
-/// pyramids, the Lucas-Kanade scratch, the result vector and the
-/// forward-backward intermediates.
-///
-/// Create one per tracking thread and call [`prepare`](Self::prepare) then
-/// [`track`](Self::track) / [`track_fb`](Self::track_fb) each frame. After the
-/// first (warm-up) frame, a steady-state step with a fixed image size, level
-/// count, window size and point count performs **no heap allocation** — all
-/// buffers are resized in place. This is the allocation-free path the VIO
-/// front-end runs every frame; the free functions
-/// ([`calc_optical_flow_ex`], [`calc_optical_flow_fb`]) are thin convenience
-/// wrappers that allocate their own scratch.
+/// What the spatial gradient matrix of a window allows.
+enum Spatial {
+    /// The matrix inverse `(h00, h01, h11)`.
+    Invertible((f32, f32, f32)),
+    /// Too flat to track; `measure_error` tells whether the residual is
+    /// still reported.
+    LowTexture { measure_error: bool },
+}
+
+/// A pyramid level the Lucas-Kanade loop can track on: 8-bit images with
+/// i16 Scharr gradients, or f32 images with f32 gradients.
+trait TrackImage {
+    type Pixel: Copy + Into<f32>;
+    type Gradient: Copy + Into<f32> + Default;
+
+    fn dimensions(&self) -> (u32, u32);
+
+    fn pixels(&self) -> &[Self::Pixel];
+
+    /// Scharr gradients, 32 times the slope per pixel, zero on the border.
+    fn gradients_into(&self, grad_x: &mut [Self::Gradient], grad_y: &mut [Self::Gradient]);
+
+    /// Classifies the spatial gradient matrix `[[gxx, gxy], [gxy, gyy]]`,
+    /// summed over `n_pixels` window samples of slopes per pixel.
+    fn spatial_inverse(gxx: f32, gxy: f32, gyy: f32, n_pixels: usize, threshold: f32) -> Spatial;
+}
+
+impl TrackImage for GrayImage {
+    type Pixel = u8;
+    type Gradient = i16;
+
+    fn dimensions(&self) -> (u32, u32) {
+        ImageBuffer::dimensions(self)
+    }
+
+    fn pixels(&self) -> &[u8] {
+        self.as_raw()
+    }
+
+    fn gradients_into(&self, grad_x: &mut [i16], grad_y: &mut [i16]) {
+        compute_gradients_into(self, grad_x, grad_y);
+    }
+
+    #[inline(always)]
+    fn spatial_inverse(gxx: f32, gxy: f32, gyy: f32, n_pixels: usize, threshold: f32) -> Spatial {
+        // Structured like OpenCV's calcOpticalFlowPyrLK: the smaller
+        // eigenvalue per window sample, (trace - discriminant) / 2 in f32,
+        // against the threshold, then a determinant test. It is kept so that
+        // 8-bit results stay comparable with OpenCV and earlier releases.
+        // As in OpenCV, the subtraction cancels for edge-like windows; see
+        // DEFAULT_MIN_EIGEN_THRESHOLD for the resulting noise. Unlike OpenCV,
+        // the discriminant is trace^2 - 4 det rather than (a - c)^2 + 4 b^2,
+        // which costs precision only for nearly isotropic windows, below
+        // 1e-3 relative, too little to move a decision. Sums and the
+        // determinant bound are in (grey levels / pixel)^2, not OpenCV's
+        // fixed-point scale. The f32 tracker uses a scale-free test instead.
+        let min_eig = min_eigenvalue(gxx, gxy, gyy) / n_pixels as f32;
+        if min_eig < threshold {
+            return Spatial::LowTexture {
+                measure_error: true,
+            };
+        }
+        match invert_2x2(gxx, gxy, gyy, 1e-6) {
+            Some(inverse) => Spatial::Invertible(inverse),
+            None => Spatial::LowTexture {
+                measure_error: false,
+            },
+        }
+    }
+}
+
+impl TrackImage for FloatPyramidLevel {
+    type Pixel = f32;
+    type Gradient = f32;
+
+    fn dimensions(&self) -> (u32, u32) {
+        ImageBuffer::dimensions(self)
+    }
+
+    fn pixels(&self) -> &[f32] {
+        self.as_raw()
+    }
+
+    fn gradients_into(&self, grad_x: &mut [f32], grad_y: &mut [f32]) {
+        let (width, height) = ImageBuffer::dimensions(self);
+        scharr_f32(
+            self.as_raw(),
+            width as usize,
+            height as usize,
+            grad_x,
+            grad_y,
+        );
+    }
+
+    #[inline(always)]
+    fn spatial_inverse(gxx: f32, gxy: f32, gyy: f32, n_pixels: usize, threshold: f32) -> Spatial {
+        // Physical units can make every entry tiny, so no test here uses an
+        // absolute epsilon. In f64, det / lambda_max has no cancellation, and
+        // an eigenvalue ratio below f32 resolution means a singular matrix
+        // at any scale.
+        let (a, b, c) = (gxx as f64, gyy as f64, gxy as f64);
+        let determinant = a * b - c * c;
+        let largest = (a + b + ((a - b).powi(2) + 4.0 * c * c).sqrt()) * 0.5;
+        let smallest = if determinant > 0.0 {
+            determinant / largest
+        } else {
+            0.0
+        };
+        let resolvable = smallest > largest * f32::EPSILON as f64;
+        if !resolvable || smallest / (n_pixels as f64) < threshold as f64 {
+            return Spatial::LowTexture {
+                measure_error: true,
+            };
+        }
+        let inverse = 1.0 / determinant;
+        Spatial::Invertible((
+            (b * inverse) as f32,
+            (-c * inverse) as f32,
+            (a * inverse) as f32,
+        ))
+    }
+}
+
+/// Upper bounds for the work a tracker context will see, used to allocate
+/// every buffer up front with `with_capacity` or `reserve` of
+/// [`TrackerContext`] and [`FloatTrackerContext`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TrackerCapacity {
+    /// Frame width in pixels.
+    pub width: u32,
+    /// Frame height in pixels.
+    pub height: u32,
+    /// Pyramid levels passed to `prepare`.
+    pub levels: usize,
+    /// Largest `window_size` passed to `track` / `track_fb`.
+    pub window_size: usize,
+    /// Most points per `track` / `track_fb` call.
+    pub points: usize,
+}
+
+/// Pyramids, scratch and result buffers of a tracker context, generic over
+/// the pyramid level type.
 #[derive(Default)]
-pub struct TrackerContext {
-    prev_pyramid: Vec<GrayImage>,
-    next_pyramid: Vec<GrayImage>,
-    scratch: Scratch,
+struct Tracker<I: TrackImage> {
+    prev_pyramid: Vec<I>,
+    next_pyramid: Vec<I>,
+    scratch: Scratch<I::Gradient>,
     results: Vec<TrackResult>,
     forward_pos: Vec<(f32, f32)>,
     backward: Vec<TrackResult>,
 }
 
-impl TrackerContext {
-    /// Creates an empty context. Buffers grow to fit on the first
-    /// [`prepare`](Self::prepare) / [`track`](Self::track) call and are reused
-    /// thereafter.
-    pub fn new() -> Self {
-        Self::default()
+impl<P> Tracker<ImageBuffer<P, Vec<P::Subpixel>>>
+where
+    P: Pixel,
+    P::Subpixel: Default,
+    ImageBuffer<P, Vec<P::Subpixel>>: TrackImage,
+{
+    /// Allocates both pyramids and every buffer for `capacity`.
+    fn reserve(&mut self, capacity: &TrackerCapacity) {
+        let TrackerCapacity {
+            width,
+            height,
+            levels,
+            points,
+            ..
+        } = *capacity;
+        reserve_pyramid(&mut self.prev_pyramid, width, height, levels);
+        reserve_pyramid(&mut self.next_pyramid, width, height, levels);
+        self.scratch.reserve(capacity);
+        reserve_total(&mut self.results, points);
+        reserve_total(&mut self.forward_pos, points);
+        reserve_total(&mut self.backward, points);
     }
+}
 
-    /// Builds the previous- and next-frame pyramids into the context's reusable
-    /// buffers. Zero-alloc in steady state (same image size and `levels`).
-    pub fn prepare(&mut self, prev: &GrayImage, next: &GrayImage, levels: usize) {
-        build_pyramid_into(prev, levels, &mut self.prev_pyramid);
-        build_pyramid_into(next, levels, &mut self.next_pyramid);
-    }
-
-    /// The previous-frame pyramid built by the last [`prepare`](Self::prepare).
-    pub fn prev_pyramid(&self) -> &[GrayImage] {
-        &self.prev_pyramid
-    }
-
-    /// The next-frame pyramid built by the last [`prepare`](Self::prepare).
-    pub fn next_pyramid(&self) -> &[GrayImage] {
-        &self.next_pyramid
-    }
-
-    /// Tracks `prev_points` using the prepared pyramids, returning the results
-    /// held inside the context. See [`calc_optical_flow_ex`] for the argument
-    /// semantics. Allocation-free in steady state.
-    pub fn track(
+impl<I: TrackImage> Tracker<I> {
+    fn track(
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
-        window_size: usize,
-        max_iterations: usize,
-        min_eigen_threshold: f32,
+        params: TrackParams,
     ) -> &[TrackResult] {
         track_into(
             &self.prev_pyramid,
             &self.next_pyramid,
             prev_points,
             predicted,
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
+            params,
             &mut self.scratch,
             &mut self.results,
         );
         &self.results
     }
 
-    /// Forward-backward consistent tracking using the prepared pyramids. See
-    /// [`calc_optical_flow_fb`] for semantics. Reuses the context's scratch and
-    /// intermediate point buffers, so it is allocation-free in steady state.
-    pub fn track_fb(
+    fn track_fb(
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
-        window_size: usize,
-        max_iterations: usize,
-        min_eigen_threshold: f32,
+        params: TrackParams,
         fb_threshold: f32,
     ) -> &[TrackResult] {
         track_into(
@@ -1030,9 +1162,7 @@ impl TrackerContext {
             &self.next_pyramid,
             prev_points,
             predicted,
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
+            params,
             &mut self.scratch,
             &mut self.results,
         );
@@ -1046,15 +1176,213 @@ impl TrackerContext {
             &self.prev_pyramid,
             &self.forward_pos,
             Some(prev_points),
-            window_size,
-            max_iterations,
-            min_eigen_threshold,
+            params,
             &mut self.scratch,
             &mut self.backward,
         );
 
         mark_fb_inconsistent(&mut self.results, &self.backward, prev_points, fb_threshold);
         &self.results
+    }
+}
+
+/// Reusable owner of every buffer the tracking hot path touches: both frame
+/// pyramids, the Lucas-Kanade scratch, the result vector and the
+/// forward-backward intermediates.
+///
+/// Create one per tracking thread and call [`prepare`](Self::prepare) then
+/// [`track`](Self::track) / [`track_fb`](Self::track_fb) each frame. All
+/// buffers are resized in place and reused. To keep allocation out of the
+/// per-frame path, create the context with
+/// [`with_capacity`](Self::with_capacity): frames of the reserved size and
+/// level count, with at most the reserved window size and point count, then
+/// perform **no heap allocation**. Without a reservation the first frame
+/// allocates, and so does any later call with more points than before. The
+/// free functions ([`calc_optical_flow_ex`], [`calc_optical_flow_fb`]) are
+/// thin convenience wrappers that allocate their own scratch.
+#[derive(Default)]
+pub struct TrackerContext {
+    tracker: Tracker<GrayImage>,
+}
+
+impl TrackerContext {
+    /// Creates an empty context. Buffers grow to fit on the first
+    /// [`prepare`](Self::prepare) / [`track`](Self::track) call and are reused
+    /// thereafter.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a context with every buffer allocated for `capacity`.
+    pub fn with_capacity(capacity: TrackerCapacity) -> Self {
+        let mut context = Self::default();
+        context.reserve(capacity);
+        context
+    }
+
+    /// Allocates every buffer for `capacity` now, so that later calls within
+    /// it do not allocate. Existing capacity is kept.
+    pub fn reserve(&mut self, capacity: TrackerCapacity) {
+        self.tracker.reserve(&capacity);
+    }
+
+    /// Builds the previous- and next-frame pyramids into the context's reusable
+    /// buffers. Zero-alloc in steady state (same image size and `levels`).
+    ///
+    /// # Panics
+    /// Panics if the two frames differ in size.
+    pub fn prepare(&mut self, prev: &GrayImage, next: &GrayImage, levels: usize) {
+        assert_eq!(
+            prev.dimensions(),
+            next.dimensions(),
+            "frames must have the same size"
+        );
+        build_pyramid_into(prev, levels, &mut self.tracker.prev_pyramid);
+        build_pyramid_into(next, levels, &mut self.tracker.next_pyramid);
+    }
+
+    /// The previous-frame pyramid built by the last [`prepare`](Self::prepare).
+    pub fn prev_pyramid(&self) -> &[GrayImage] {
+        &self.tracker.prev_pyramid
+    }
+
+    /// The next-frame pyramid built by the last [`prepare`](Self::prepare).
+    pub fn next_pyramid(&self) -> &[GrayImage] {
+        &self.tracker.next_pyramid
+    }
+
+    /// Tracks `prev_points` using the prepared pyramids, returning the results
+    /// held inside the context. See [`calc_optical_flow_ex`] for the argument
+    /// semantics. Allocation-free in steady state.
+    pub fn track(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        params: TrackParams,
+    ) -> &[TrackResult] {
+        self.tracker.track(prev_points, predicted, params)
+    }
+
+    /// Forward-backward consistent tracking using the prepared pyramids. See
+    /// [`calc_optical_flow_fb`] for semantics. Reuses the context's scratch and
+    /// intermediate point buffers, so it is allocation-free in steady state.
+    pub fn track_fb(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        params: TrackParams,
+        fb_threshold: f32,
+    ) -> &[TrackResult] {
+        self.tracker
+            .track_fb(prev_points, predicted, params, fb_threshold)
+    }
+}
+
+/// Pyramidal Lucas-Kanade tracker for f32 images in physical units, e.g.
+/// thermal frames in °C. The counterpart of [`TrackerContext`], owning both
+/// frame pyramids and every buffer the tracking hot path touches.
+///
+/// The algorithm and its parameters match the 8-bit tracker: pyramids of
+/// 2x2 means, Scharr gradients, bilinear window sampling, the same
+/// convergence rules, prediction and forward-backward check, and the same
+/// [`TrackResult`] and [`TrackStatus`]. Pixels, pyramids and gradients stay
+/// in f32 throughout; nothing is quantized. The pyramid averages exactly
+/// instead of truncating like the 8-bit pyramid, so on the same frames the
+/// two trackers agree closely but not bit for bit.
+///
+/// Units follow the image:
+/// - [`TrackParams::min_eigen_threshold`] is in (input unit / pixel)^2, the
+///   unit of the f32 detector's scores, and has no default. A window whose mean minimum
+///   gradient eigenvalue is below it is [`TrackStatus::LowTexture`]. Windows
+///   whose eigenvalue ratio is below f32 resolution are low texture as well,
+///   at any contrast: the singularity test is relative, so small physical
+///   gradients still track.
+/// - [`TrackResult::error`] is the mean absolute residual in the input unit.
+/// - Positions, `fb_threshold` and [`CONVERGENCE_EPSILON`] are in pixels.
+///
+/// Create the context with [`with_capacity`](Self::with_capacity) to keep
+/// allocation out of the per-frame path, as for [`TrackerContext`].
+#[derive(Default)]
+pub struct FloatTrackerContext {
+    tracker: Tracker<FloatPyramidLevel>,
+}
+
+impl FloatTrackerContext {
+    /// Creates an empty context. Buffers grow to fit on the first call and
+    /// are reused thereafter.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a context with every buffer allocated for `capacity`.
+    pub fn with_capacity(capacity: TrackerCapacity) -> Self {
+        let mut context = Self::default();
+        context.reserve(capacity);
+        context
+    }
+
+    /// Allocates every buffer for `capacity` now, so that later calls within
+    /// it do not allocate. Existing capacity is kept.
+    pub fn reserve(&mut self, capacity: TrackerCapacity) {
+        self.tracker.reserve(&capacity);
+    }
+
+    /// Builds the previous- and next-frame pyramids with up to `levels`
+    /// levels; halving stops below 2 pixels.
+    ///
+    /// # Panics
+    /// Panics if the two frames differ in size.
+    pub fn prepare(&mut self, prev: FloatImageView<'_>, next: FloatImageView<'_>, levels: usize) {
+        assert_eq!(
+            prev.dimensions(),
+            next.dimensions(),
+            "frames must have the same size"
+        );
+        build_float_pyramid_into(prev, levels, &mut self.tracker.prev_pyramid);
+        build_float_pyramid_into(next, levels, &mut self.tracker.next_pyramid);
+    }
+
+    /// The previous-frame pyramid built by the last [`prepare`](Self::prepare).
+    pub fn prev_pyramid(&self) -> &[FloatPyramidLevel] {
+        &self.tracker.prev_pyramid
+    }
+
+    /// The next-frame pyramid built by the last [`prepare`](Self::prepare).
+    pub fn next_pyramid(&self) -> &[FloatPyramidLevel] {
+        &self.tracker.next_pyramid
+    }
+
+    /// Tracks `prev_points` from the previous into the next frame, as
+    /// [`calc_optical_flow_ex`] does. `params.min_eigen_threshold` is in
+    /// (input unit / pixel)^2. Returns one result per point, in order, from
+    /// the context's own buffer.
+    ///
+    /// # Panics
+    /// Panics if `prepare` was not called, `params.window_size` is even, or
+    /// `predicted` has a different length than `prev_points`.
+    pub fn track(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        params: TrackParams,
+    ) -> &[TrackResult] {
+        self.tracker.track(prev_points, predicted, params)
+    }
+
+    /// Forward-backward consistent tracking, as [`calc_optical_flow_fb`]
+    /// does; `fb_threshold` is in pixels.
+    ///
+    /// # Panics
+    /// As [`track`](Self::track).
+    pub fn track_fb(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        params: TrackParams,
+        fb_threshold: f32,
+    ) -> &[TrackResult] {
+        self.tracker
+            .track_fb(prev_points, predicted, params, fb_threshold)
     }
 }
 
@@ -1097,7 +1425,7 @@ mod tests {
 
         for &size in &[1usize, 5, 7, 11, 21] {
             let radius = size / 2;
-            let lv = Level {
+            let lv = Level::<GrayImage> {
                 prev: img.as_raw(),
                 curr: img.as_raw(),
                 grad_x: &grad_x,

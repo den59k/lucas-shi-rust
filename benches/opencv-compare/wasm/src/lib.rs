@@ -3,7 +3,7 @@
 
 use image::GrayImage;
 use optical_flow_lk::{
-    DEFAULT_MIN_EIGEN_THRESHOLD, TrackStatus, TrackerContext, good_features_to_track,
+    DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackStatus, TrackerContext, good_features_to_track,
 };
 use wasm_bindgen::prelude::*;
 
@@ -55,7 +55,7 @@ impl Bench {
     pub fn detect_points(&self, quality: f32, min_distance: u32) -> Vec<f32> {
         good_features_to_track(&self.prev, quality, min_distance)
             .into_iter()
-            .flat_map(|(x, y, s)| [x as f32, y as f32, s])
+            .flat_map(|c| [c.x as f32, c.y as f32, c.score])
             .collect()
     }
 
@@ -63,8 +63,13 @@ impl Bench {
     /// of points with `Tracked` status.
     pub fn track(&mut self, levels: usize, window: usize, iterations: usize) -> usize {
         self.ctx.prepare(&self.prev, &self.next, levels);
+        let params = TrackParams {
+            window_size: window,
+            max_iterations: iterations,
+            min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+        };
         self.ctx
-            .track(&self.points, None, window, iterations, DEFAULT_MIN_EIGEN_THRESHOLD)
+            .track(&self.points, None, params)
             .iter()
             .filter(|r| r.status == TrackStatus::Tracked)
             .count()
@@ -73,8 +78,13 @@ impl Bench {
     /// Flat `[x, y, status, ...]` results for parity checks.
     pub fn track_results(&mut self, levels: usize, window: usize, iterations: usize) -> Vec<f32> {
         self.ctx.prepare(&self.prev, &self.next, levels);
+        let params = TrackParams {
+            window_size: window,
+            max_iterations: iterations,
+            min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+        };
         self.ctx
-            .track(&self.points, None, window, iterations, DEFAULT_MIN_EIGEN_THRESHOLD)
+            .track(&self.points, None, params)
             .iter()
             .flat_map(|r| [r.pos.0, r.pos.1, status_code(r.status)])
             .collect()

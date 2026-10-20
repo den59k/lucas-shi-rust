@@ -70,6 +70,15 @@ if not RESUME:
         (before / "benches/support/feature_stage_access.rs").write_text(adapter)
         baseline_adapter = "full-plane adapter; native tuple buffers, no timed format conversion"
     else:
+        # Earlier fused revisions have a non-generic tensor buffer and a
+        # quality-level filter.
+        adapter = (after / "benches/support/feature_stage_access.rs").read_text()
+        if "struct TensorRows<" not in source:
+            adapter = adapter.replace("TensorRows::<i32>", "TensorRows")
+        if "fn filter_by_threshold(" not in source:
+            adapter = adapter.replace("filter_by_threshold(p, Threshold::relative(q))",
+                                      "filter_by_quality(p, q)")
+        (before / "benches/support/feature_stage_access.rs").write_text(adapter)
         baseline_adapter = "current fused adapter"
 
     metadata = {

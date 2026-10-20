@@ -1,0 +1,5 @@
+# Selects the stable channel with clippy and rustfmt; it does not pin a
+# version. The oldest supported compiler is `rust-version` in Cargo.toml.
+[toolchain]
+channel = "stable"
+components = ["clippy", "rustfmt"]

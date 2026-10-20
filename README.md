@@ -11,7 +11,8 @@ High-performance Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi
 - 🔁 Forward-backward consistency check to reject occlusions and outliers
 - 🧭 Optional motion prediction (initial guess) for large inter-frame displacements
 - 🔍 Shi-Tomasi feature detection, plus grid-based detection for uniform coverage
-- ♻️ Zero-allocation steady-state path (`TrackerContext`) for real-time per-frame tracking
+- ♻️ Zero-allocation steady-state path (`TrackerContext`, `DetectorContext`) for real-time per-frame tracking, with up-front capacity reservation
+- 🌡️ f32 pipeline for images in physical units, e.g. thermal frames in °C, without 8-bit quantization
 - ⚡ SIMD-accelerated gradients and pyramid: AVX2 (x86), NEON (aarch64), `simd128` (wasm)
 - 🌐 Built on the [`image`](https://crates.io/crates/image) crate; WebAssembly-ready
 
@@ -20,7 +21,7 @@ High-performance Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-optical-flow-lk = "0.4"
+optical-flow-lk = "0.5"
 ```
 
 Basic example — detect corners in one frame and track them into the next:
@@ -28,7 +29,7 @@ Basic example — detect corners in one frame and track them into the next:
 use image::{open, GrayImage};
 use optical_flow_lk::{
     build_pyramid, calc_optical_flow_ex, good_features_to_track,
-    TrackStatus, DEFAULT_MIN_EIGEN_THRESHOLD,
+    Corner, TrackParams, TrackStatus, DEFAULT_MIN_EIGEN_THRESHOLD,
 };
 
 let prev: GrayImage = open("examples/input1.png").unwrap().into_luma8();
@@ -40,12 +41,15 @@ let next_pyr = build_pyramid(&next, 4);
 // Keep corners scoring at least 1% of the strongest one, at least 5px apart.
 let mut corners = good_features_to_track(&prev, 0.01, 5);
 corners.truncate(100);
-let points: Vec<(f32, f32)> = corners.iter().map(|&(x, y, _)| (x as f32, y as f32)).collect();
+let points: Vec<(f32, f32)> = corners.iter().map(Corner::position).collect();
 
-// `None` = no initial guess; 21px window, 30 iterations per level.
-let results = calc_optical_flow_ex(
-    &prev_pyr, &next_pyr, &points, None, 21, 30, DEFAULT_MIN_EIGEN_THRESHOLD,
-);
+// 21px window, 30 iterations per level; `None` = no initial guess.
+let params = TrackParams {
+    window_size: 21,
+    max_iterations: 30,
+    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+};
+let results = calc_optical_flow_ex(&prev_pyr, &next_pyr, &points, None, params);
 
 for (start, r) in points.iter().zip(&results) {
     if r.status == TrackStatus::Tracked {
@@ -61,15 +65,13 @@ For per-frame tracking (e.g. a VIO front-end or the web demo), reuse a
 `track_fb` adds the forward-backward consistency check:
 
 ```rust
-use optical_flow_lk::{TrackerContext, DEFAULT_MIN_EIGEN_THRESHOLD, DEFAULT_FB_THRESHOLD};
+use optical_flow_lk::{TrackerContext, DEFAULT_FB_THRESHOLD};
 
 let mut ctx = TrackerContext::new();
 
-// Per frame pair (`prev`, `next` are `&GrayImage`):
+// Per frame pair (`prev`, `next` are `&GrayImage`), with `params` as above:
 ctx.prepare(&prev, &next, 4);
-let results = ctx.track_fb(
-    &points, None, 21, 30, DEFAULT_MIN_EIGEN_THRESHOLD, DEFAULT_FB_THRESHOLD,
-);
+let results = ctx.track_fb(&points, None, params, DEFAULT_FB_THRESHOLD);
 // Points flagged `TrackStatus::FbInconsistent` failed the round-trip.
 ```
 
@@ -78,19 +80,83 @@ and score planes plus the spacing grid, so `detect` / `detect_grid` allocate
 nothing after the first frame:
 
 ```rust
-use optical_flow_lk::DetectorContext;
+use optical_flow_lk::{DetectorContext, Grid};
 
 let mut detector = DetectorContext::new();
 // Top up lost tracks every few frames: 6x4 grid, 3 per cell, quality 0.05,
 // at least 12 px from each other and from the points already tracked.
-let fresh = detector.detect_grid(&prev, 6, 4, 3, 0.05, 12, &points);
+let grid = Grid { cols: 6, rows: 4, max_per_cell: 3 };
+let fresh = detector.detect_grid(&prev, grid, 0.05, 12, &points);
 ```
+
+To keep even the first frame free of allocation, create the contexts with
+`with_capacity`. A `DetectorCapacity` reserves for the largest possible
+candidate count, so no image content can grow a buffer later:
+
+```rust
+use optical_flow_lk::{DetectorCapacity, DetectorContext, TrackerCapacity, TrackerContext};
+
+let mut detector = DetectorContext::with_capacity(DetectorCapacity {
+    width: 640, height: 480, min_distance: 12, grid_cells: 24, existing_points: 200,
+});
+let mut tracker = TrackerContext::with_capacity(TrackerCapacity {
+    width: 640, height: 480, levels: 4, window_size: 21, points: 200,
+});
+```
+
+### f32 images in physical units
+
+For sensors whose values carry a unit, such as thermal cameras in °C,
+[`FloatDetectorContext`] and [`FloatTrackerContext`] run the same algorithms on
+f32 frames, without range normalization or 8-bit quantization. Scores and the
+tracker's eigenvalue threshold are in (unit / pixel)^2, residuals in the unit
+itself. A [`FloatImageView`] borrows a frame after checking that every value is
+finite and within range:
+
+```rust
+use optical_flow_lk::{
+    Corner, FloatDetectorContext, FloatImageView, FloatTrackerContext, ScoreThreshold,
+    TrackParams, DEFAULT_FB_THRESHOLD,
+};
+
+// `prev_celsius` and `next_celsius` are 640x480 row-major `&[f32]` frames.
+let prev = FloatImageView::new(prev_celsius, 640, 480)?;
+let next = FloatImageView::new(next_celsius, 640, 480)?;
+
+// Corners scoring at least 0.002 (°C / px)^2, at least 8 px apart.
+let mut detector = FloatDetectorContext::new();
+let corners = detector.detect(prev, ScoreThreshold::absolute(0.002), 8);
+let points: Vec<(f32, f32)> = corners.iter().map(Corner::position).collect();
+
+// The eigenvalue threshold is in (°C / px)^2 as well and has no default.
+let params = TrackParams { window_size: 15, max_iterations: 15, min_eigen_threshold: 1e-4 };
+let mut tracker = FloatTrackerContext::new();
+tracker.prepare(prev, next, 3);
+let results = tracker.track_fb(&points, None, params, DEFAULT_FB_THRESHOLD);
+```
+
+On frames holding 8-bit values the f32 detector returns the 8-bit detector's
+corners bit for bit. On a 640x480 frame on an Apple M2, a whole frame step
+(pyramids, forward-backward tracking, grid top-up) costs about 1.1x the 8-bit
+pipeline on the same data, natively and under WASI; tracking alone is faster in
+f32. See [the measurements](benches/results/float-vs-u8-2026-10-17.md).
+Against the published 0.3.1, the f32 frame step is 3.3-3.6x faster natively
+and 2.9-3.1x faster under WASI ([comparison](benches/results/v0.3.1-vs-current-2026-10-17.md)).
 
 [`TrackerContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.TrackerContext.html
 [`DetectorContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.DetectorContext.html
+[`FloatDetectorContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.FloatDetectorContext.html
+[`FloatTrackerContext`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.FloatTrackerContext.html
+[`FloatImageView`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.FloatImageView.html
 
-> The original `calc_optical_flow` is still available but **deprecated** since
-> 0.3.0 — prefer `calc_optical_flow_ex` (status + error) or `TrackerContext`.
+> Upgrading from 0.4: detection returns [`Corner`]s, grid detection takes a
+> [`Grid`], and tracking takes [`TrackParams`]. The deprecated
+> `calc_optical_flow` is gone; use `calc_optical_flow_ex` or `TrackerContext`.
+> See the [changelog](CHANGELOG.md).
+
+[`Corner`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.Corner.html
+[`Grid`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.Grid.html
+[`TrackParams`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.TrackParams.html
 
 ## Performance
 

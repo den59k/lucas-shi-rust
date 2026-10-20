@@ -6,8 +6,8 @@
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackStatus, TrackerContext,
-    good_features_to_track_grid,
+    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, Grid, TrackParams, TrackStatus,
+    TrackerContext, good_features_to_track_grid,
 };
 
 const W: u32 = 320;
@@ -97,11 +97,18 @@ fn main() {
     ];
 
     // Detect a uniform spread of corners in the first frame.
-    let detected = good_features_to_track_grid(&frames[0], 6, 4, 3, 0.05, 12, &[]);
-    let mut points: Vec<(f32, f32)> = detected
-        .iter()
-        .map(|&(x, y, _)| (x as f32, y as f32))
-        .collect();
+    let detected = good_features_to_track_grid(
+        &frames[0],
+        Grid {
+            cols: 6,
+            rows: 4,
+            max_per_cell: 3,
+        },
+        0.05,
+        12,
+        &[],
+    );
+    let mut points: Vec<(f32, f32)> = detected.iter().map(|corner| corner.position()).collect();
     println!("Frame 0: detected {} corners on a 6x4 grid", points.len());
 
     let mut ctx = TrackerContext::new();
@@ -121,9 +128,11 @@ fn main() {
             .track_fb(
                 &points,
                 Some(&predicted),
-                WIN,
-                ITERS,
-                DEFAULT_MIN_EIGEN_THRESHOLD,
+                TrackParams {
+                    window_size: WIN,
+                    max_iterations: ITERS,
+                    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                },
                 DEFAULT_FB_THRESHOLD,
             )
             .to_vec();

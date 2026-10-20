@@ -16,7 +16,7 @@ pub fn tensor_scores(
     gy: &image::ImageBuffer<image::Luma<i16>, Vec<i16>>,
 ) -> ScorePlane {
     let mut scores = vec![0.0; gx.as_raw().len()];
-    let mut rows = TensorRows::default();
+    let mut rows = TensorRows::<i32>::default();
     min_eigenvalue_scores(gx.as_raw(), gy.as_raw(), gx.width() as usize, &mut rows, &mut scores);
     scores
 }
@@ -37,7 +37,7 @@ pub fn floored_nms(scores: &mut ScorePlane, w: u32, h: u32, q: f32) -> Vec<(u32,
 }
 
 pub fn quality(p: &mut Vec<(u32, u32, f32)>, q: f32) {
-    filter_by_quality(p, q);
+    filter_by_threshold(p, Threshold::relative(q));
 }
 
 pub fn spacing(p: &[(u32, u32, f32)], distance: u32, w: u32, h: u32) -> Vec<(u32, u32, f32)> {

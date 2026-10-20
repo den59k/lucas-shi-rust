@@ -2,7 +2,7 @@
 
 use image::{GrayImage, Luma};
 use nalgebra::{Matrix2, SymmetricEigen};
-use optical_flow_lk::{good_features_to_track, good_features_to_track_grid};
+use optical_flow_lk::{Corner, Grid, good_features_to_track, good_features_to_track_grid};
 
 type Feature = (u32, u32, f32);
 
@@ -106,9 +106,10 @@ fn texture(width: u32, height: u32) -> GrayImage {
     })
 }
 
-fn assert_features_match(actual: &[Feature], expected: &[Feature]) {
+fn assert_features_match(actual: &[Corner], expected: &[Feature]) {
     assert_eq!(actual.len(), expected.len());
-    for (a, e) in actual.iter().zip(expected) {
+    for (&a, e) in actual.iter().zip(expected) {
+        let a: Feature = a.into();
         assert_eq!((a.0, a.1), (e.0, e.1));
         assert!(
             (a.2 - e.2).abs() <= 1e-4 * e.2.max(1.0),
@@ -149,7 +150,20 @@ fn flat_and_tiny_images_do_not_produce_corners_or_panic() {
         for value in [0, 127, 255] {
             let image = GrayImage::from_pixel(width, height, Luma([value]));
             assert!(good_features_to_track(&image, 0.01, 0).is_empty());
-            assert!(good_features_to_track_grid(&image, 2, 2, 3, 0.01, 0, &[]).is_empty());
+            assert!(
+                good_features_to_track_grid(
+                    &image,
+                    Grid {
+                        cols: 2,
+                        rows: 2,
+                        max_per_cell: 3
+                    },
+                    0.01,
+                    0,
+                    &[]
+                )
+                .is_empty()
+            );
         }
     }
 }
@@ -183,11 +197,31 @@ fn grid_detector_matches_reference_with_existing_points() {
             expected.push(candidate);
         }
     }
-    let actual = good_features_to_track_grid(&image, cols, rows, budget, 0.01, distance, &existing);
+    let actual = good_features_to_track_grid(
+        &image,
+        Grid {
+            cols,
+            rows,
+            max_per_cell: budget,
+        },
+        0.01,
+        distance,
+        &existing,
+    );
     assert_features_match(&actual, &expected);
     assert_eq!(
         actual,
-        good_features_to_track_grid(&image, cols, rows, budget, 0.01, distance, &existing)
+        good_features_to_track_grid(
+            &image,
+            Grid {
+                cols,
+                rows,
+                max_per_cell: budget
+            },
+            0.01,
+            distance,
+            &existing
+        )
     );
 }
 
@@ -198,7 +232,7 @@ fn step_edge_has_no_corner_response_away_from_its_endpoints() {
     assert!(
         features
             .iter()
-            .all(|&(_, y, _)| y == 1 || y == image.height() - 2)
+            .all(|c| c.y == 1 || c.y == image.height() - 2)
     );
 }
 
@@ -212,9 +246,13 @@ fn checkerboard_corner_is_detected_and_unchanged_by_an_intensity_offset() {
     assert!(
         features
             .iter()
-            .any(|&(x, y, _)| (13..=16).contains(&x) && (13..=16).contains(&y))
+            .any(|c| (13..=16).contains(&c.x) && (13..=16).contains(&c.y))
     );
-    assert!(features.iter().all(|p| p.2.is_finite() && p.2 > 0.0));
+    assert!(
+        features
+            .iter()
+            .all(|c| c.score.is_finite() && c.score > 0.0)
+    );
     assert_eq!(features, good_features_to_track(&offset_image, 0.1, 0));
 }
 
@@ -228,7 +266,17 @@ fn checkerboard(contrast: u8, offset: u8) -> GrayImage {
 fn one_grey_level_contrast_retains_corners_in_both_apis() {
     let image = checkerboard(1, 127);
     let plain = good_features_to_track(&image, 0.1, 1);
-    let grid = good_features_to_track_grid(&image, 2, 2, 2, 0.1, 1, &[]);
+    let grid = good_features_to_track_grid(
+        &image,
+        Grid {
+            cols: 2,
+            rows: 2,
+            max_per_cell: 2,
+        },
+        0.1,
+        1,
+        &[],
+    );
     assert_features_match(
         &plain,
         &reference_spacing(&reference_candidates(&image, 0.1), 1),
@@ -237,13 +285,13 @@ fn one_grey_level_contrast_retains_corners_in_both_apis() {
         assert!(
             features
                 .iter()
-                .any(|&(x, y, _)| { (13..=16).contains(&x) && (13..=16).contains(&y) }),
+                .any(|c| (13..=16).contains(&c.x) && (13..=16).contains(&c.y)),
             "one-grey-level corner was lost"
         );
         assert!(
             features
                 .iter()
-                .all(|p| p.2.is_finite() && p.2 > 0.0 && p.2 < 1.0)
+                .all(|c| c.score.is_finite() && c.score > 0.0 && c.score < 1.0)
         );
     }
 }
@@ -259,10 +307,10 @@ fn scores_scale_with_contrast_squared_without_moving_corners() {
         let actual = good_features_to_track(&checkerboard(contrast, 0), 0.1, 1);
         assert_eq!(actual.len(), base.len());
         for (feature, original) in actual.iter().zip(&base) {
-            assert_eq!((feature.0, feature.1), (original.0, original.1));
-            let expected = original.2 as f64 * (contrast as f64).powi(2);
+            assert_eq!((feature.x, feature.y), (original.x, original.y));
+            let expected = original.score as f64 * (contrast as f64).powi(2);
             assert!(
-                (feature.2 as f64 - expected).abs() <= expected * 2e-7,
+                (feature.score as f64 - expected).abs() <= expected * 2e-7,
                 "contrast {contrast}: {feature:?}, expected score {expected}"
             );
         }
