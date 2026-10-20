@@ -10,14 +10,21 @@
 //! `advance(frame)`, which reuses the last frame's pyramid. Each iteration is
 //! one new frame, alternating between two frames; `pyramids` times the pyramid
 //! step alone, `track_fb/150` adds forward-backward tracking of 150 points.
+//!
+//! `regime` is the per-frame step of a real-time front-end: `advance` with the
+//! new frame, then `track` (`fb_off`) or `track_fb` (`fb_all`) of the
+//! strongest corners of the first frame. Portrait 360x640 and 640x480 frames,
+//! 4 levels, windows 13 and 21, 44 and 150 points; ids are
+//! `regime/<size>/w<window>/p<points>/<fb>`.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
+use std::time::Duration;
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackerContext, build_pyramid,
-    calc_optical_flow_ex,
+    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackerContext,
+    build_pyramid, calc_optical_flow_ex, good_features_to_track,
 };
 
 const W: u32 = 640;
@@ -32,7 +39,12 @@ const PARAMS: TrackParams = TrackParams {
 };
 
 fn textured(seed: u32) -> GrayImage {
-    let mut buf: Vec<f32> = (0..(W * H))
+    textured_sized(W, H, seed)
+}
+
+/// Hash noise band-limited by two 3x3 means, `w` x `h`.
+fn textured_sized(w: u32, h: u32, seed: u32) -> GrayImage {
+    let mut buf: Vec<f32> = (0..(w * h))
         .map(|i| {
             let mut s = i
                 .wrapping_mul(2654435761)
@@ -47,26 +59,26 @@ fn textured(seed: u32) -> GrayImage {
     // Two light box blurs to band-limit the texture.
     for _ in 0..2 {
         let src = buf.clone();
-        for y in 0..H as i32 {
-            for x in 0..W as i32 {
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
                 let (mut sum, mut n) = (0.0, 0.0);
                 for dy in -1..=1 {
                     for dx in -1..=1 {
                         let (nx, ny) = (x + dx, y + dy);
-                        if nx >= 0 && ny >= 0 && nx < W as i32 && ny < H as i32 {
-                            sum += src[(ny as u32 * W + nx as u32) as usize];
+                        if nx >= 0 && ny >= 0 && nx < w as i32 && ny < h as i32 {
+                            sum += src[(ny as u32 * w + nx as u32) as usize];
                             n += 1.0;
                         }
                     }
                 }
-                buf[(y as u32 * W + x as u32) as usize] = sum / n;
+                buf[(y as u32 * w + x as u32) as usize] = sum / n;
             }
         }
     }
-    let mut img = GrayImage::new(W, H);
-    for y in 0..H {
-        for x in 0..W {
-            img.put_pixel(x, y, Luma([buf[(y * W + x) as usize] as u8]));
+    let mut img = GrayImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            img.put_pixel(x, y, Luma([buf[(y * w + x) as usize] as u8]));
         }
     }
     img
@@ -169,6 +181,63 @@ fn bench_frame_step(c: &mut Criterion) {
     group.finish();
 }
 
+/// Forward-backward mode of a `regime` case.
+#[derive(Clone, Copy)]
+enum Fb {
+    Off,
+    All,
+}
+
+impl Fb {
+    fn label(self) -> &'static str {
+        match self {
+            Fb::Off => "fb_off",
+            Fb::All => "fb_all",
+        }
+    }
+}
+
+fn bench_regime(c: &mut Criterion) {
+    let mut group = c.benchmark_group("regime");
+    group.sample_size(30);
+    group.warm_up_time(Duration::from_secs(1));
+    group.measurement_time(Duration::from_secs(2));
+    for (w, h) in [(360u32, 640u32), (640, 480)] {
+        let first = textured_sized(w, h, 1);
+        let frames = [first.clone(), shift(&first, 3.0, 2.0)];
+        let corners = good_features_to_track(&frames[0], 0.01, 10);
+        for n in [44usize, 150] {
+            let points: Vec<(f32, f32)> = corners.iter().take(n).map(Corner::position).collect();
+            assert_eq!(points.len(), n, "too few corners at {w}x{h}");
+            for window in [13usize, 21] {
+                let params = TrackParams {
+                    window_size: window,
+                    ..PARAMS
+                };
+                for fb in [Fb::Off, Fb::All] {
+                    let mut ctx = TrackerContext::new();
+                    ctx.advance(&frames[0], LEVELS);
+                    let mut index = 0;
+                    let id = format!("{w}x{h}/w{window}/p{n}/{}", fb.label());
+                    group.bench_function(id, |b| {
+                        b.iter(|| {
+                            index ^= 1;
+                            ctx.advance(&frames[index], LEVELS);
+                            black_box(match fb {
+                                Fb::Off => ctx.track(&points, None, params),
+                                Fb::All => {
+                                    ctx.track_fb(&points, None, params, DEFAULT_FB_THRESHOLD)
+                                }
+                            });
+                        });
+                    });
+                }
+            }
+        }
+    }
+    group.finish();
+}
+
 /// Local shift helper (bench has no access to the test helpers).
 fn shift(src: &GrayImage, sx: f32, sy: f32) -> GrayImage {
     let (w, h) = src.dimensions();
@@ -197,5 +266,5 @@ fn shift(src: &GrayImage, sx: f32, sy: f32) -> GrayImage {
     out
 }
 
-criterion_group!(benches, bench_tracking, bench_frame_step);
+criterion_group!(benches, bench_tracking, bench_frame_step, bench_regime);
 criterion_main!(benches);

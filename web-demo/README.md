@@ -60,6 +60,29 @@ cd web-demo
 This requires [`wasm-pack`](https://rustwasm.github.io/wasm-pack/). SIMD
 (`+simd128`) is enabled automatically via the repo's `.cargo/config.toml`.
 
+## Benchmark mode
+
+`index.html?bench=1` skips the camera and times the per-frame tracking step in
+the browser: two synthetic textured frames 3 px apart (360x640 by default) go
+through `TrackerContext::advance` in turn, and each step tracks the strongest
+corners of the first frame with `track` or `track_fb`, 4 levels, 30
+iterations. **Start benchmark** (or `&auto=1`) spins for two seconds so the
+CPU clock ramps up, then runs every case for 300 steps back to back and prints
+medians over samples of 5 steps into `<pre id="bench">`; the same numbers and
+a checksum of each case's results are in `window.__lkbench`.
+
+Query options: `w`, `h` (frame size), `points` (default `44,150`), `window`
+(`13,21`), `fb` (`-1` = `track` only, `0` = `track_fb` over all levels,
+`k` = backward pass over the finest `k` levels; default `-1,0,1`), `iters`,
+`batch`, `levels`, `maxiter`, `warmup` (ms).
+
+To run it on an Android phone over USB, serve the folder on localhost,
+forward the port with `adb reverse tcp:8080 tcp:8080`, and open
+`http://localhost:8080/?bench=1` in Chrome on the phone; `localhost` is a
+secure context, so plain HTTP works. Chrome's DevTools protocol
+(`adb forward tcp:9222 localabstract:chrome_devtools_remote`) can read
+`window.__lkbench` back.
+
 ## How it works
 
 Each animation frame the page draws the camera image into a small processing

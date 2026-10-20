@@ -41,6 +41,13 @@
       align-items: center; justify-content: center; text-align: center;
       background: #111; font-size: 16px; line-height: 1.5;
     }
+    /* Benchmark mode (?bench=1): no camera, a start button and a report. */
+    #benchpage { display: none; padding: 16px; overflow: auto; height: 100%; }
+    #benchpage button {
+      background: #2563eb; color: #fff; border: 0; border-radius: 8px;
+      padding: 10px 16px; font-size: 15px; font-weight: 600;
+    }
+    #bench { font: 12px/1.45 ui-monospace, monospace; white-space: pre-wrap; }
   </style>
 </head>
 <body>
@@ -53,9 +60,17 @@
   </div>
   <div id="hint">Tap the video to drop a point, or hit Auto to detect corners — they ride the optical flow.</div>
   <div id="msg"></div>
+  <div id="benchpage">
+    <button id="start">Start benchmark</button>
+    <pre id="bench">?bench=1 times advance + track / track_fb on synthetic frames.
+Options: w, h (frame size, default 360x640), points (44,150), window (13,21),
+fb (-1 = track only, 0 = all levels, k = finest k levels; default -1,0,1),
+iters (timed steps per case, default 300), batch (steps per sample, default 5),
+auto=1 to start without the button.</pre>
+  </div>
 
   <script type="module">
-    import init, { Tracker } from "./pkg/web_demo.js";
+    import init, { Tracker, Bench } from "./pkg/web_demo.js";
 
     const view = document.getElementById("view");
     const ctx = view.getContext("2d", { willReadFrequently: true });
@@ -161,7 +176,81 @@
       requestAnimationFrame(() => loop(video));
     }
 
-    main();
+    // Benchmark mode. Each case runs its steps back to back in one task, so
+    // the CPU stays busy and its clock high; the page yields only between
+    // cases. Samples are means over `batch` steps, which keeps them well above
+    // the coarse performance.now() resolution of a page without isolation.
+    async function benchPage() {
+      document.getElementById("stage").style.display = "none";
+      document.getElementById("bar").style.display = "none";
+      document.getElementById("hint").style.display = "none";
+      document.getElementById("benchpage").style.display = "block";
+      const out = document.getElementById("bench");
+      const q = new URLSearchParams(location.search);
+      const list = (key, fallback) => (q.get(key) || fallback).split(",").map(Number);
+      const width = Number(q.get("w") || 360), height = Number(q.get("h") || 640);
+      const iters = Number(q.get("iters") || 300), batch = Number(q.get("batch") || 5);
+      const levels = Number(q.get("levels") || 4), maxIter = Number(q.get("maxiter") || 30);
+      await init();
+      const supportsLevels = Bench.supports_fb_levels();
+      const fbModes = list("fb", "-1,0,1").filter((fb) => fb <= 0 || supportsLevels);
+      const report = window.__lkbench = {
+        done: false, userAgent: navigator.userAgent, width, height, levels,
+        maxIterations: maxIter, iters, batch, supportsLevels, results: [],
+      };
+      const yieldNow = () => new Promise((resolve) => setTimeout(resolve, 0));
+      const start = async () => {
+        document.getElementById("start").disabled = true;
+        const t0 = performance.now();
+        const bench = new Bench(width, height);
+        const lines = [`${width}x${height}, ${levels} levels, ${maxIter} iterations, ` +
+          `${iters} steps per case in samples of ${batch}`, ""];
+        out.textContent = lines.join("\n");
+        // Spin for a while first so the clock has ramped up before the first case.
+        const warmup = Number(q.get("warmup") || 2000);
+        bench.configure(150, 21, maxIter, levels);
+        for (const tw = performance.now(); performance.now() - tw < warmup;) bench.step(0);
+        for (const points of list("points", "44,150")) {
+          for (const win of list("window", "13,21")) {
+            for (const fb of fbModes) {
+              const used = bench.configure(points, win, maxIter, levels);
+              const checksum = bench.checksum(fb);
+              bench.configure(points, win, maxIter, levels);
+              let tracked = 0;
+              for (let i = 0; i < 30; i++) tracked = bench.step(fb);
+              const samples = [];
+              for (let s = 0; s < Math.ceil(iters / batch); s++) {
+                const ts = performance.now();
+                for (let i = 0; i < batch; i++) bench.step(fb);
+                samples.push((performance.now() - ts) / batch);
+              }
+              samples.sort((a, b) => a - b);
+              const pick = (p) => samples[Math.round((samples.length - 1) * p)];
+              const row = {
+                points: used, window: win, fb, median_ms: pick(0.5), p10_ms: pick(0.1),
+                p90_ms: pick(0.9), tracked, checksum,
+              };
+              report.results.push(row);
+              const fbLabel = fb < 0 ? "off" : fb === 0 ? "all" : `${fb}`;
+              lines.push(`p${String(used).padEnd(4)} w${String(win).padEnd(3)} fb ${fbLabel.padEnd(4)}` +
+                ` median ${row.median_ms.toFixed(3)} ms  p10 ${row.p10_ms.toFixed(3)}` +
+                `  p90 ${row.p90_ms.toFixed(3)}  tracked ${tracked}  ${checksum}`);
+              out.textContent = lines.join("\n");
+              await yieldNow();
+            }
+          }
+        }
+        bench.free();
+        report.total_s = (performance.now() - t0) / 1000;
+        lines.push("", `done in ${report.total_s.toFixed(1)} s`);
+        out.textContent = lines.join("\n");
+        report.done = true;
+      };
+      document.getElementById("start").addEventListener("click", start);
+      if (q.get("auto") === "1") start();
+    }
+
+    if (new URLSearchParams(location.search).has("bench")) benchPage(); else main();
   </script>
 </body>
 </html>

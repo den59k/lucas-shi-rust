@@ -2,10 +2,10 @@
 //! demo. JS pushes one grayscale frame per tick; the tracker keeps the previous
 //! frame and advances every point along the optical flow.
 
-use image::{imageops, GrayImage, ImageBuffer};
+use image::{imageops, GrayImage, ImageBuffer, Luma};
 use optical_flow_lk::{
-    good_features_to_track, DetectorContext, Grid, TrackParams, TrackStatus, TrackerContext,
-    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD,
+    good_features_to_track, DetectorContext, Grid, TrackParams, TrackResult, TrackStatus,
+    TrackerContext, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD,
 };
 use wasm_bindgen::prelude::*;
 
@@ -94,7 +94,11 @@ impl Tracker {
         let feats = match self.prev.as_ref() {
             Some(prev) => self.detector.detect_grid(
                 prev,
-                Grid { cols, rows, max_per_cell },
+                Grid {
+                    cols,
+                    rows,
+                    max_per_cell,
+                },
                 quality,
                 min_distance,
                 &existing,
@@ -145,7 +149,9 @@ impl Tracker {
                 max_iterations: self.iters,
                 min_eigen_threshold: self.min_eigen,
             };
-            let results = self.ctx.track_fb(&self.points, Some(&predicted), params, self.fb_threshold);
+            let results =
+                self.ctx
+                    .track_fb(&self.points, Some(&predicted), params, self.fb_threshold);
 
             let mut kept = Vec::with_capacity(results.len());
             let mut kept_vel = Vec::with_capacity(results.len());
@@ -211,5 +217,178 @@ impl Tracker {
         })?;
 
         Some((x0 as f32 + best.x as f32, y0 as f32 + best.y as f32))
+    }
+}
+
+/// Hash noise band-limited by two 3x3 means, as in the crate's
+/// `benches/tracking.rs`.
+fn bench_texture(w: u32, h: u32, seed: u32) -> Vec<f32> {
+    let mut buf: Vec<f32> = (0..w * h)
+        .map(|i| {
+            let mut s = i
+                .wrapping_mul(2654435761)
+                .wrapping_add(seed.wrapping_mul(40503))
+                ^ 0x9e3779b9;
+            s ^= s >> 15;
+            s = s.wrapping_mul(0x85ebca6b);
+            s ^= s >> 13;
+            (s & 0xff) as f32
+        })
+        .collect();
+    for _ in 0..2 {
+        let src = buf.clone();
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let (mut sum, mut n) = (0.0, 0.0);
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        let (nx, ny) = (x + dx, y + dy);
+                        if nx >= 0 && ny >= 0 && nx < w as i32 && ny < h as i32 {
+                            sum += src[(ny as u32 * w + nx as u32) as usize];
+                            n += 1.0;
+                        }
+                    }
+                }
+                buf[(y as u32 * w + x as u32) as usize] = sum / n;
+            }
+        }
+    }
+    buf
+}
+
+/// `texture` resampled so that content moves by `(sx, sy)`; outside reads 0.
+fn bench_frame(texture: &[f32], w: u32, h: u32, sx: f32, sy: f32) -> GrayImage {
+    let pixel = |x: i32, y: i32| {
+        if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
+            texture[(y as u32 * w + x as u32) as usize]
+        } else {
+            0.0
+        }
+    };
+    GrayImage::from_fn(w, h, |x, y| {
+        let (fx, fy) = (x as f32 - sx, y as f32 - sy);
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (dx, dy) = (fx - x0, fy - y0);
+        let (x0, y0) = (x0 as i32, y0 as i32);
+        let value = pixel(x0, y0) * (1.0 - dx) * (1.0 - dy)
+            + pixel(x0 + 1, y0) * dx * (1.0 - dy)
+            + pixel(x0, y0 + 1) * (1.0 - dx) * dy
+            + pixel(x0 + 1, y0 + 1) * dx * dy;
+        Luma([value as u8])
+    })
+}
+
+/// Timed per-frame tracking for `index.html?bench=1`: two synthetic textured
+/// frames 3 px apart are passed to `TrackerContext::advance` in turn, and
+/// every step tracks the strongest corners of the first frame with `track`
+/// or `track_fb`.
+#[wasm_bindgen]
+pub struct Bench {
+    frames: [GrayImage; 2],
+    corners: Vec<(f32, f32)>,
+    points: Vec<(f32, f32)>,
+    params: TrackParams,
+    levels: usize,
+    index: usize,
+    ctx: TrackerContext,
+}
+
+#[wasm_bindgen]
+impl Bench {
+    /// Synthesizes the frame pair and detects its corners (quality 0.01, at
+    /// least 10 px apart).
+    #[wasm_bindgen(constructor)]
+    pub fn new(width: u32, height: u32) -> Bench {
+        let texture = bench_texture(width, height, 1);
+        let frames = [
+            bench_frame(&texture, width, height, 0.0, 0.0),
+            bench_frame(&texture, width, height, 3.0, 2.0),
+        ];
+        let corners = good_features_to_track(&frames[0], 0.01, 10)
+            .iter()
+            .map(|corner| corner.position())
+            .collect();
+        Bench {
+            frames,
+            corners,
+            points: Vec::new(),
+            params: TrackParams {
+                window_size: 21,
+                max_iterations: 30,
+                min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+            },
+            levels: 4,
+            index: 0,
+            ctx: TrackerContext::new(),
+        }
+    }
+
+    /// Whether `fb_levels` other than "all" are supported by the linked crate.
+    pub fn supports_fb_levels() -> bool {
+        false
+    }
+
+    /// Selects the case: the `points` strongest corners, the window size,
+    /// iteration cap and pyramid levels. Returns the point count used.
+    pub fn configure(
+        &mut self,
+        points: usize,
+        window: usize,
+        iterations: usize,
+        levels: usize,
+    ) -> usize {
+        self.points = self.corners.iter().take(points).copied().collect();
+        self.params.window_size = window;
+        self.params.max_iterations = iterations;
+        self.levels = levels;
+        self.ctx = TrackerContext::new();
+        self.index = 0;
+        self.ctx.advance(&self.frames[0], levels);
+        self.points.len()
+    }
+
+    /// One frame step: `advance` with the other frame, then `track`
+    /// (`fb_levels < 0`) or `track_fb` over all levels (`fb_levels == 0`) or
+    /// the finest `fb_levels`. Returns the number of `Tracked` points.
+    pub fn step(&mut self, fb_levels: i32) -> usize {
+        self.index ^= 1;
+        self.ctx.advance(&self.frames[self.index], self.levels);
+        let results = self.track(fb_levels);
+        results
+            .iter()
+            .filter(|r| r.status == TrackStatus::Tracked)
+            .count()
+    }
+
+    /// FNV-1a hash of the exact result bits of tracking the first frame into
+    /// the second, to compare the wasm build with a native run.
+    pub fn checksum(&mut self, fb_levels: i32) -> String {
+        self.ctx
+            .prepare(&self.frames[0], &self.frames[1], self.levels);
+        self.index = 1;
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for r in self.track(fb_levels) {
+            let status = r.status as u32;
+            for word in [
+                r.pos.0.to_bits(),
+                r.pos.1.to_bits(),
+                r.error.to_bits(),
+                status,
+            ] {
+                for byte in word.to_le_bytes() {
+                    hash = (hash ^ byte as u64).wrapping_mul(0x0100_0000_01b3);
+                }
+            }
+        }
+        format!("{hash:016x}")
+    }
+
+    fn track(&mut self, fb_levels: i32) -> &[TrackResult] {
+        if fb_levels < 0 {
+            self.ctx.track(&self.points, None, self.params)
+        } else {
+            self.ctx
+                .track_fb(&self.points, None, self.params, DEFAULT_FB_THRESHOLD)
+        }
     }
 }
