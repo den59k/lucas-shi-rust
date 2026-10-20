@@ -1005,6 +1005,10 @@ fn quality_floor(scores: &[f32], width: usize, height: usize, quality_level: f32
 /// in row-major order. A pixel is kept when no 8-neighbor has a greater score,
 /// so plateaus survive; it equals the maximum of its 3x3 neighborhood, which is
 /// computed separably in `rows`.
+///
+/// Almost all pixels fail the test, so each row is tested in groups of
+/// [`MAXIMA_GROUP`] pixels first, without branches, which vectorizes. Only
+/// groups containing a kept pixel are scanned one by one.
 #[inline(always)]
 fn local_maxima(
     scores: &[f32],
@@ -1028,13 +1032,60 @@ fn local_maxima(
     for y in 1..height - 1 {
         max_row_3(row(y + 1), &mut rows[(y + 1) % 3]);
         let (above, center, below) = (&rows[(y + 2) % 3], &rows[y % 3], &rows[(y + 1) % 3]);
-        for (i, &score) in row(y)[1..width - 1].iter().enumerate() {
+        let interior = &row(y)[1..width - 1];
+        let groups = interior
+            .as_chunks::<MAXIMA_GROUP>()
+            .0
+            .iter()
+            .zip(above.as_chunks().0)
+            .zip(center.as_chunks().0)
+            .zip(below.as_chunks().0);
+        let mut start = 0;
+        for (((s, a), c), b) in groups {
+            let mut mask = kept_mask(s, a, c, b, floor);
+            while mask != 0 {
+                let i = start + mask.trailing_zeros() as usize;
+                maxima.push((i as u32 + 1, y as u32, interior[i]));
+                mask &= mask - 1;
+            }
+            start += MAXIMA_GROUP;
+        }
+        for i in start..interior.len() {
             let neighborhood = max_score(max_score(above[i], center[i]), below[i]);
-            if score > 0.0 && score >= floor && score == neighborhood {
-                maxima.push((i as u32 + 1, y as u32, score));
+            if is_kept(interior[i], neighborhood, floor) {
+                maxima.push((i as u32 + 1, y as u32, interior[i]));
             }
         }
     }
+}
+
+/// Pixels per branch-free group in [`local_maxima`].
+const MAXIMA_GROUP: usize = 8;
+
+/// Whether [`local_maxima`] keeps a pixel with `score` whose 3x3 neighborhood
+/// maximum is `neighborhood`. Evaluates all three comparisons, without
+/// branches.
+#[inline(always)]
+fn is_kept(score: f32, neighborhood: f32, floor: f32) -> bool {
+    (score > 0.0) & (score >= floor) & (score == neighborhood)
+}
+
+/// Bit `k` is set when [`local_maxima`] keeps pixel `k` of a group, given the
+/// horizontal 3-pixel maxima of the rows above, at and below it.
+#[inline(always)]
+fn kept_mask(
+    scores: &[f32; MAXIMA_GROUP],
+    above: &[f32; MAXIMA_GROUP],
+    center: &[f32; MAXIMA_GROUP],
+    below: &[f32; MAXIMA_GROUP],
+    floor: f32,
+) -> u32 {
+    let pixels = scores.iter().zip(above).zip(center).zip(below);
+    let mask = |(k, (((&score, &above), &center), &below))| {
+        let neighborhood = max_score(max_score(above, center), below);
+        u32::from(is_kept(score, neighborhood, floor)) << k
+    };
+    pixels.enumerate().map(mask).fold(0, |all, bit| all | bit)
 }
 
 /// `dst[i] = max(src[i], src[i + 1], src[i + 2])`, one value per interior column.
@@ -1231,7 +1282,9 @@ mod tests {
     #[test]
     fn local_maxima_match_brute_force_with_ties_and_floors() {
         let mut state = 0x2545_f491u32;
-        for (width, height) in [(3, 3), (4, 3), (3, 7), (8, 5), (17, 11)] {
+        // Interior widths cover no, exactly one, and several full groups of
+        // MAXIMA_GROUP pixels, with and without a remainder.
+        for (width, height) in [(3, 3), (4, 3), (3, 7), (8, 5), (10, 4), (17, 11), (27, 6)] {
             for levels in [2, 4, 1000] {
                 // Few distinct levels produce plateaus; zero scores are never maxima.
                 let scores: Vec<f32> = (0..width * height)
