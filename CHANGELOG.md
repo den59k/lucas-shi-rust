@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.1 — 2026-10-20
+
+No breaking changes.
+
+### Changed
+
+- `image` without default features. The library only uses its buffer types
+  (`GrayImage`, `ImageBuffer`, `Luma`, `Pixel`), so dependents, wasm builds
+  included, no longer compile every image codec, the AV1 encoder and rayon.
+  On `wasm32-unknown-unknown` the library's normal dependency tree shrinks
+  from 100 to 23 crates. An application that decodes or encodes images
+  through `image` and relied on this crate to enable the codecs now enables
+  the features it needs in its own manifest, e.g.
+  `image = { version = "0.25", default-features = false, features = ["png"] }`.
+
+### Added
+
+- `TrackerContext::advance` / `FloatTrackerContext::advance`: the per-frame
+  form of `prepare`. `advance(frame, levels)` makes the pyramid of the last
+  frame the previous-frame pyramid by swapping buffers and builds only the
+  pyramid of `frame`, so the caller keeps no copy of the last frame and one
+  pyramid is built per frame instead of two. Pyramids and tracking results
+  equal those of `prepare(last, frame, levels)` bit for bit, and the steady
+  state allocates nothing. A changed level count rebuilds the previous
+  pyramid from the last frame; without a last frame, or for a frame of
+  another size, both pyramids are built from `frame`.
+
+### Benchmarks
+
+- `benches/tracking.rs` adds `frame_step_640x480`: `prepare` against
+  `advance` for the pyramid step alone and with `track_fb` of 150 points.
+  On a Ryzen 9 9900X the 4-level 640x480 pyramid step takes 12.7 instead of
+  25.3 µs under Node 24/WASI with `simd128`, and 57-72 instead of 100-142 µs
+  natively (ranges over four runs). With tracking, the step is 7.8 ms under
+  WASI and 4.2-5.1 ms natively either way: tracking dominates, and the
+  difference is within the noise.
+
 ## 0.5.0 — 2026-10-18
 
 ### Breaking changes
