@@ -150,6 +150,11 @@ impl<'a, T> Plane<'a, T> {
     /// Whether every source row of a `size` window at `(x0, y0)` has `span`
     /// readable elements, which the vector kernels read past the window's own
     /// `size + 1`.
+    #[cfg(any(
+        target_arch = "x86",
+        target_arch = "x86_64",
+        all(target_arch = "wasm32", target_feature = "simd128")
+    ))]
     #[inline(always)]
     fn holds(&self, x0: usize, y0: usize, size: usize, span: usize) -> bool {
         (y0 + size) * self.width + x0 + span <= self.data.len()
@@ -293,6 +298,11 @@ impl Ops for Scalar {
 
 /// Rows of i32 lanes accumulated between flushes into i64 totals: [`PAIRS`]
 /// pairwise products per lane, of which a row adds one per 8-lane chunk.
+#[cfg(any(
+    target_arch = "x86",
+    target_arch = "x86_64",
+    all(target_arch = "wasm32", target_feature = "simd128")
+))]
 #[inline(always)]
 fn flush_rows(stride: usize) -> usize {
     debug_assert!(stride / 8 <= PAIRS, "window wider than MAX_WINDOW");
