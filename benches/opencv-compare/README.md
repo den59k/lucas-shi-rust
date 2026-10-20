@@ -134,6 +134,105 @@ relaxed criterion, 40 on the exact point set. The points that disagree by more t
 image's long bright streaks, where motion along the streak is ambiguous;
 OpenCV's own forward-backward check rejects 49 of its 200 answers on this pair.
 
+## Results, 2026-10-20: 0.5.0
+
+Same machine, inputs and parameters. `main` at de1fb09, after PR #6 (f32
+pipeline, shared detector core, named parameters) and PR #7 (branch-free
+grouped non-maximum suppression). Rust 1.95 stable, which the new
+`rust-toolchain.toml` selects; Node 24.15; Python 3.12; OpenCV 4.11.0 as above.
+Corners, tracked points and every parity figure are identical to the exact
+column: 354 corners, 142 of 200 tracked, wasm within 5e-5 of native.
+
+### Speed, milliseconds per call
+
+| Build | Detect exact | Detect 0.5.0 | Track exact | Track 0.5.0 |
+|---|---:|---:|---:|---:|
+| crate, wasm simd128 | 0.76 | **1.10** | 4.19 | 4.21 |
+| crate, wasm scalar | 3.39 | 4.37 | 5.41 | 5.51 |
+| OpenCV.js 4.11, wasm scalar | 2.47 | 2.50 | 5.81 | 5.82 |
+| crate, native | 0.77 | **0.73** | 3.34 | 3.41 |
+| OpenCV native, 1 thread | 2.05 | 2.04 | 2.32 | 2.34 |
+| OpenCV native, 24 threads | 2.05 | 2.06 | 1.04 | 1.02 |
+
+Native detection improved slightly; wasm detection got slower on this frame,
+by 43% with simd128 and 29% scalar. Tracking is unchanged.
+
+### Where the wasm slowdown comes from
+
+The simd128 wrapper was rebuilt at three commits and timed with the method
+above (20 warm-up calls, median of 100, two rounds each, run one at a time):
+
+| Crate | Toolchain | Detect | Track |
+|---|---|---:|---:|
+| 0.4.1 | stable 1.95 | 0.78 | 4.27 |
+| after PR #6 | stable 1.95 | 0.78 | 4.18 |
+| after PR #7 (`main`) | stable 1.95 | 1.08 | 4.16 |
+| after PR #7 (`main`) | nightly 1.97 | 1.09 | 4.10 |
+| after PR #7 (`main`), no `wasm-opt` | stable 1.95 | 1.07 | 4.14 |
+
+PR #6 is neutral. The slowdown comes with PR #7, on both toolchains, with and
+without `wasm-opt`. The crate's own WASI harness (`cargo +stable bench
+--target wasm32-wasip1 --bench features`, plain mode, Node 24 on the same
+CPU) shows that it depends on the input. 0.4.1 to `main`, two alternating
+passes:
+
+| Input | 0.4.1 | `main` | Change |
+|---|---:|---:|---:|
+| example_720x405 | 0.74 ms | 1.05-1.09 ms | +42-48% |
+| texture_320x240 | 0.79 ms | 0.58-0.60 ms | -23 to -27% |
+| texture_640x480 | 3.29 ms | 2.58-2.64 ms | -20 to -21% |
+| low_contrast_320x240 | 0.77 ms | 0.56 ms | -28 to -29% |
+| flat_640x480 | 0.75 ms | 0.70 ms | -6% |
+
+The synthetic inputs gain, somewhat less than the 28-40% PR #7 reported on an
+Apple M2, but the photographic example frame, the only input of this
+comparison, loses 42-48%. Natively on the same CPU every input gains with
+PR #7 (example 11%, textures 20-22%, low contrast 29%, flat 3%), so this is
+specific to how V8 on x86-64 lowers the grouped test on rows with many
+candidates. The x86-64 and arm64 results of the same wasm binary differ, so
+numbers from a desktop do not predict a phone.
+
+### On a phone
+
+Xiaomi 11T (MediaTek Dimensity 1200: four Cortex-A78 and four A55 cores),
+Android 14, Chrome 155, over USB. The same `--target web` simd128 wrapper for
+each snapshot was loaded into one page, which timed the same frame pair and
+point set (20 warm-up calls, then 100 samples of 5 calls each, median per
+call) in four alternating rounds with a four-second pause between packages.
+The first round runs before the phone warms up; rounds 2-4 are steady.
+Corners and tracked counts match the desktop.
+
+| Build | Detect, rounds 2-4 | Track, rounds 2-4 |
+|---|---:|---:|
+| crate 0.4.1 | 3.04-3.06 ms | 14.9-15.0 ms |
+| crate `main` (PR #6 and #7) | 2.88-2.98 ms | 14.7-14.9 ms |
+| crate `main` with the 0.4.1 scan on wasm32 | 2.98-3.04 ms | 14.7-14.8 ms |
+| OpenCV.js 4.11, wasm scalar | 9.8-10.0 ms | 16.1-16.2 ms |
+
+The crate rows come from two runs; OpenCV.js was timed in the second run,
+in the same page and rotation as the 0.4.1 and `main` builds, with the calls
+of `harness.cjs` (349 corners, 199 tracked, as in Node). On this phone the
+crate detects 3.3× faster than OpenCV.js and tracks 9% faster; on the
+desktop under Node the ratios are 2.3× and 1.4×.
+
+On this arm64 phone PR #7 is a 5% gain on the example frame, where V8 on
+x86-64 loses 42-48%. The run-to-run spread on the phone is about 2%, and
+the first round is up to 10% off, so single short runs on a phone are not
+reliable.
+
+### Mitigation tested
+
+Compiling the grouped test out on `wasm32` and keeping PR #7's branch-free
+remainder loop restores the example frame on x86-64 but is 4-9% slower than
+0.4.1 on the textures, because that loop evaluates all three comparisons for
+every pixel. Restoring the 0.4.1 short-circuit scan on `wasm32` instead, with
+the grouped test kept on every other target, matches 0.4.1 within 1% on all
+five WASI inputs on the Ryzen (second of two passes: example 753 vs 762 µs,
+texture 320x240 812 vs 809 µs, texture 640x480 3.45 vs 3.41 ms, low contrast
+795 vs 810 µs, flat 776 vs 783 µs), passes the bit-exact regression fixtures
+under WASI, and on the phone sits between 0.4.1 and `main`. Native code is
+unchanged by it.
+
 ## Running
 
 ```sh

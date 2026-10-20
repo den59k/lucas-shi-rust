@@ -160,16 +160,32 @@ and 2.9-3.1x faster under WASI ([comparison](benches/results/v0.3.1-vs-current-2
 
 ## Performance
 
-Measured against OpenCV 4.11 on the bundled 720×405 frame pair, medians of 100
-calls on an AMD Ryzen 9 9900X. The harness, parameters and caveats are in
+Measured against OpenCV 4.11 on the bundled 720×405 frame pair at 0.5.0 on
+2026-10-20. The harness, parameters and caveats are in
 [`benches/opencv-compare/`](benches/opencv-compare/).
+
+On a phone, the deployment target: Xiaomi 11T (MediaTek Dimensity 1200,
+arm64), Android 14, Chrome 155. Medians per call over 100 samples of 5 calls,
+steady-state rounds after warm-up.
 
 | | Detect, ms | Track 200 points, ms |
 |---|---:|---:|
-| this crate, wasm `simd128` | 0.8 | 4.2 |
+| this crate, wasm `simd128` | 2.9 | 14.7 |
+| OpenCV.js 4.11 (wasm, scalar build) | 9.9 | 16.1 |
+
+On a desktop, AMD Ryzen 9 9900X, wasm under Node 24. Medians of 100 calls.
+
+| | Detect, ms | Track 200 points, ms |
+|---|---:|---:|
+| this crate, wasm `simd128` | 1.1 | 4.2 |
 | OpenCV.js 4.11 (wasm, scalar build) | 2.5 | 5.8 |
-| this crate, native (AVX2) | 0.8 | 3.4 |
+| this crate, native (AVX2) | 0.7 | 3.4 |
 | OpenCV native, 1 thread | 2.0 | 2.3 |
+
+The desktop wasm detection figure was 0.8 ms at 0.4.1. The grouped
+non-maximum suppression of 0.5.0 is faster natively, on the phone and on the
+synthetic benchmark inputs, but slower on this frame under V8 on x86-64.
+Details and the per-input figures are in the comparison README.
 
 Corners agree with OpenCV's to the pixel: every corner this crate finds has an
 OpenCV Scharr corner within 1.5 px, and 99% of OpenCV's have one of this

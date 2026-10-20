@@ -86,6 +86,17 @@ let positions: Vec<(f32, f32)> = fresh.iter().map(Corner::position).collect();
   inputs are 9-38% faster natively (aarch64) and 28-40% faster under
   Node/WASI with `simd128` than 0.4.1; the suppression stage alone is 38-62%
   and 54-77% faster (Apple M2, means of two alternating rounds).
+- Measured again on `main` after merging #6 and #7 with the OpenCV comparison
+  harness (bundled 720×405 frame, Ryzen 9 9900X, medians of 100 calls):
+  detection 0.77 → 0.73 ms native, but 0.76 → 1.10 ms in wasm with `simd128`
+  under Node 24 on x86-64 (scalar wasm 3.39 → 4.37 ms). Tracking is unchanged
+  at 4.2 ms wasm and 3.4 ms native, and all outputs are identical. The wasm
+  slowdown comes with the grouped suppression and is input dependent: on the
+  same machine under WASI the synthetic benchmark inputs are 20-29% faster
+  than 0.4.1 and the example frame is 42-48% slower. On an arm64 phone
+  (Xiaomi 11T, Chrome 155) the same frame is 5% faster than 0.4.1, and the
+  crate detects 3.3× faster than OpenCV.js there (2.9 vs 9.9 ms). See
+  [the comparison README](benches/opencv-compare/README.md).
 
 ## 0.4.1 — 2026-10-18
 
