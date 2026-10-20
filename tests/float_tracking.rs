@@ -463,6 +463,78 @@ fn repeated_and_reused_tracking_is_deterministic() {
 }
 
 #[test]
+fn advance_matches_prepare_on_a_frame_sequence() {
+    let (w, h) = SIZE;
+    let base = texture(w, h, 10);
+    let frames: Vec<Vec<f32>> = [((0.0, 0.0), 0.0), ((1.6, -0.9), 0.0), ((3.1, 0.4), 0.015)]
+        .into_iter()
+        .map(|(motion, angle)| {
+            // Small physical contrast, as in a thermal frame in °C.
+            warp(&base, w, h, motion, angle)
+                .iter()
+                .map(|v| 21.0 + v * 0.01)
+                .collect()
+        })
+        .collect();
+    let params = TrackParams {
+        window_size: 15,
+        max_iterations: 20,
+        min_eigen_threshold: 1e-6,
+    };
+    let bits = |results: &[TrackResult]| -> Vec<(u32, u32, TrackStatus, u32)> {
+        results
+            .iter()
+            .map(|r| {
+                (
+                    r.pos.0.to_bits(),
+                    r.pos.1.to_bits(),
+                    r.status,
+                    r.error.to_bits(),
+                )
+            })
+            .collect()
+    };
+
+    let mut prepared = FloatTrackerContext::new();
+    let mut prepared_points = lattice(w, h, 12.0, 30);
+    let mut advanced = FloatTrackerContext::new();
+    let mut advanced_points = prepared_points.clone();
+    advanced.advance(view(&frames[0], w, h), 3);
+
+    for pair in frames.windows(2) {
+        prepared.prepare(view(&pair[0], w, h), view(&pair[1], w, h), 3);
+        advanced.advance(view(&pair[1], w, h), 3);
+        assert_eq!(advanced.prev_pyramid(), prepared.prev_pyramid());
+        assert_eq!(advanced.next_pyramid(), prepared.next_pyramid());
+
+        let expected = prepared
+            .track_fb(&prepared_points, None, params, DEFAULT_FB_THRESHOLD)
+            .to_vec();
+        let results = advanced
+            .track_fb(&advanced_points, None, params, DEFAULT_FB_THRESHOLD)
+            .to_vec();
+        assert_eq!(bits(&results), bits(&expected));
+        assert!(results.iter().any(|r| r.status == TrackStatus::Tracked));
+
+        prepared_points = expected.iter().map(|r| r.pos).collect();
+        advanced_points = results.iter().map(|r| r.pos).collect();
+    }
+
+    // A change of `levels` rebuilds the previous pyramid from the last frame,
+    // a change of size starts over from the new frame.
+    let mut reference = FloatTrackerContext::new();
+    advanced.advance(view(&frames[0], w, h), 2);
+    reference.prepare(view(&frames[2], w, h), view(&frames[0], w, h), 2);
+    assert_eq!(advanced.prev_pyramid(), reference.prev_pyramid());
+    assert_eq!(advanced.next_pyramid(), reference.next_pyramid());
+    let small = texture(40, 30, 11);
+    advanced.advance(view(&small, 40, 30), 2);
+    reference.prepare(view(&small, 40, 30), view(&small, 40, 30), 2);
+    assert_eq!(advanced.prev_pyramid(), reference.prev_pyramid());
+    assert_eq!(advanced.next_pyramid(), reference.next_pyramid());
+}
+
+#[test]
 #[should_panic(expected = "same size")]
 fn frames_of_different_size_panic() {
     let a = vec![0.0f32; 20 * 10];

@@ -241,6 +241,12 @@ fn level_dimensions(width: u32, height: u32, levels: usize) -> impl Iterator<Ite
     .take(levels.max(1))
 }
 
+/// Number of levels [`build_pyramid_into`] produces for a `width` x `height`
+/// image and `levels` requested levels.
+pub(crate) fn pyramid_level_count(width: u32, height: u32, levels: usize) -> usize {
+    level_dimensions(width, height, levels).count()
+}
+
 /// Allocates every level of a `width` x `height` pyramid with `levels` levels,
 /// so that building it later does not allocate.
 pub(crate) fn reserve_pyramid<P>(

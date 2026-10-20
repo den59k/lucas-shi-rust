@@ -61,19 +61,28 @@ for (start, r) in points.iter().zip(&results) {
 ### Real-time tracking
 
 For per-frame tracking (e.g. a VIO front-end or the web demo), reuse a
-[`TrackerContext`]. After the first frame it performs no heap allocation, and
-`track_fb` adds the forward-backward consistency check:
+[`TrackerContext`] and pass it each new frame with `advance`. The pyramid of
+the last frame becomes the previous one, so only the new frame's pyramid is
+built and you keep no copy of the last frame. After the first frame it
+performs no heap allocation, and `track_fb` adds the forward-backward
+consistency check:
 
 ```rust
 use optical_flow_lk::{TrackerContext, DEFAULT_FB_THRESHOLD};
 
 let mut ctx = TrackerContext::new();
 
-// Per frame pair (`prev`, `next` are `&GrayImage`), with `params` as above:
-ctx.prepare(&prev, &next, 4);
+// Per frame (`frame` is a `&GrayImage`), with `params` as above:
+ctx.advance(frame, 4);
 let results = ctx.track_fb(&points, None, params, DEFAULT_FB_THRESHOLD);
 // Points flagged `TrackStatus::FbInconsistent` failed the round-trip.
 ```
+
+`advance(frame, 4)` gives the same results, bit for bit, as
+`prepare(&last_frame, frame, 4)`, which builds both pyramids from an explicit
+frame pair. On the first call there is no last frame yet, so both pyramids
+show `frame` and tracking measures no motion. `FloatTrackerContext` has the
+same `advance`.
 
 Detection has the same shape. A [`DetectorContext`] owns the gradient, tensor
 and score planes plus the spacing grid, so `detect` / `detect_grid` allocate

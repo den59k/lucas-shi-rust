@@ -2,7 +2,9 @@ use image::{GrayImage, ImageBuffer, Luma, Pixel};
 
 use crate::features::reserve_total;
 use crate::float_image::FloatImageView;
-use crate::pyramid::{build_float_pyramid_into, build_pyramid_into, reserve_pyramid};
+use crate::pyramid::{
+    build_float_pyramid_into, build_pyramid_into, pyramid_level_count, reserve_pyramid,
+};
 use crate::utils::fast_gradients::compute_gradients_into;
 use crate::utils::float_gradients::scharr_f32;
 
@@ -1087,7 +1089,7 @@ pub struct TrackerCapacity {
     pub width: u32,
     /// Frame height in pixels.
     pub height: u32,
-    /// Pyramid levels passed to `prepare`.
+    /// Pyramid levels passed to `prepare` / `advance`.
     pub levels: usize,
     /// Largest `window_size` passed to `track` / `track_fb`.
     pub window_size: usize,
@@ -1101,6 +1103,10 @@ pub struct TrackerCapacity {
 struct Tracker<I: TrackImage> {
     prev_pyramid: Vec<I>,
     next_pyramid: Vec<I>,
+    /// Level count of `next_pyramid` while it holds the pyramid of the last
+    /// next frame, which `advance` can then reuse. `None` before the first
+    /// frame and after `reserve` reshaped the base level.
+    next_levels: Option<usize>,
     scratch: Scratch<I::Gradient>,
     results: Vec<TrackResult>,
     forward_pos: Vec<(f32, f32)>,
@@ -1123,7 +1129,12 @@ where
             ..
         } = *capacity;
         reserve_pyramid(&mut self.prev_pyramid, width, height, levels);
+        let base = self.next_pyramid.first().map(|level| level.dimensions());
         reserve_pyramid(&mut self.next_pyramid, width, height, levels);
+        if self.next_pyramid.first().map(|level| level.dimensions()) != base {
+            // The base level was reshaped and no longer holds the last frame.
+            self.next_levels = None;
+        }
         self.scratch.reserve(capacity);
         reserve_total(&mut self.results, points);
         reserve_total(&mut self.forward_pos, points);
@@ -1132,6 +1143,39 @@ where
 }
 
 impl<I: TrackImage> Tracker<I> {
+    /// Records that `next_pyramid` was just built from a frame.
+    fn built_next(&mut self) {
+        self.next_levels = Some(self.next_pyramid.len());
+    }
+
+    /// Shared body of `advance`. `build` builds a pyramid of the new frame of
+    /// size `dimensions`, `rebuild` one of the given base level, both with the
+    /// caller's `levels`.
+    fn advance(
+        &mut self,
+        dimensions: (u32, u32),
+        levels: usize,
+        build: impl Fn(&mut Vec<I>),
+        rebuild: impl FnOnce(&I, &mut Vec<I>),
+    ) {
+        // The base level of the next pyramid is the last frame itself.
+        let last_frame = self
+            .next_levels
+            .filter(|_| self.next_pyramid.first().map(I::dimensions) == Some(dimensions));
+        match last_frame {
+            Some(built)
+                if built == self.next_pyramid.len()
+                    && built == pyramid_level_count(dimensions.0, dimensions.1, levels) =>
+            {
+                std::mem::swap(&mut self.prev_pyramid, &mut self.next_pyramid);
+            }
+            Some(_) => rebuild(&self.next_pyramid[0], &mut self.prev_pyramid),
+            None => build(&mut self.prev_pyramid),
+        }
+        build(&mut self.next_pyramid);
+        self.built_next();
+    }
+
     fn track(
         &mut self,
         prev_points: &[(f32, f32)],
@@ -1190,10 +1234,12 @@ impl<I: TrackImage> Tracker<I> {
 /// pyramids, the Lucas-Kanade scratch, the result vector and the
 /// forward-backward intermediates.
 ///
-/// Create one per tracking thread and call [`prepare`](Self::prepare) then
-/// [`track`](Self::track) / [`track_fb`](Self::track_fb) each frame. All
-/// buffers are resized in place and reused. To keep allocation out of the
-/// per-frame path, create the context with
+/// Create one per tracking thread. Each frame, call [`advance`](Self::advance)
+/// with the new frame, or [`prepare`](Self::prepare) with a frame pair, then
+/// [`track`](Self::track) / [`track_fb`](Self::track_fb). `advance` reuses
+/// the pyramid of the last frame, so it builds one pyramid per frame instead
+/// of two. All buffers are resized in place and reused. To keep allocation
+/// out of the per-frame path, create the context with
 /// [`with_capacity`](Self::with_capacity): frames of the reserved size and
 /// level count, with at most the reserved window size and point count, then
 /// perform **no heap allocation**. Without a reservation the first frame
@@ -1239,14 +1285,66 @@ impl TrackerContext {
         );
         build_pyramid_into(prev, levels, &mut self.tracker.prev_pyramid);
         build_pyramid_into(next, levels, &mut self.tracker.next_pyramid);
+        self.tracker.built_next();
     }
 
-    /// The previous-frame pyramid built by the last [`prepare`](Self::prepare).
+    /// Moves to the next frame pair: the pyramid of the last next frame
+    /// becomes the previous-frame pyramid, by swapping buffers, and the
+    /// next-frame pyramid is built from `frame`.
+    ///
+    /// The pyramids, and therefore all tracking results, equal those of
+    /// `prepare(last_next, frame, levels)` bit for bit, where `last_next` is
+    /// the last frame passed to `advance` or as `next` to `prepare`. Only one
+    /// pyramid is built, and the caller does not need to keep the last frame.
+    /// This is the preferred per-frame call. In steady state (same frame size
+    /// and `levels`) it performs no heap allocation.
+    ///
+    /// When the last frame cannot be reused as is, the call still leaves both
+    /// pyramids ready for tracking:
+    /// - With a different `levels` than before, the previous-frame pyramid is
+    ///   rebuilt from the last frame, which still equals
+    ///   `prepare(last_next, frame, levels)`.
+    /// - Without a last frame (on the first call, or after
+    ///   [`reserve`](Self::reserve) changed the frame size) or when `frame`
+    ///   differs in size from it, both pyramids are built from `frame`, as
+    ///   `prepare(frame, frame, levels)` does. Tracking on that pair measures
+    ///   no motion.
+    ///
+    /// ```
+    /// # use image::GrayImage;
+    /// # use optical_flow_lk::{DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackerContext};
+    /// # let frames = vec![GrayImage::new(64, 48); 3];
+    /// # let mut points = vec![(32.0, 24.0)];
+    /// # let params = TrackParams {
+    /// #     window_size: 21,
+    /// #     max_iterations: 30,
+    /// #     min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+    /// # };
+    /// let mut ctx = TrackerContext::new();
+    /// ctx.advance(&frames[0], 4);
+    /// for frame in &frames[1..] {
+    ///     ctx.advance(frame, 4);
+    ///     let results = ctx.track_fb(&points, None, params, DEFAULT_FB_THRESHOLD);
+    ///     points = results.iter().map(|result| result.pos).collect();
+    /// }
+    /// ```
+    pub fn advance(&mut self, frame: &GrayImage, levels: usize) {
+        self.tracker.advance(
+            frame.dimensions(),
+            levels,
+            |pyramid| build_pyramid_into(frame, levels, pyramid),
+            |base, pyramid| build_pyramid_into(base, levels, pyramid),
+        );
+    }
+
+    /// The previous-frame pyramid built by the last [`prepare`](Self::prepare)
+    /// or [`advance`](Self::advance).
     pub fn prev_pyramid(&self) -> &[GrayImage] {
         &self.tracker.prev_pyramid
     }
 
-    /// The next-frame pyramid built by the last [`prepare`](Self::prepare).
+    /// The next-frame pyramid built by the last [`prepare`](Self::prepare) or
+    /// [`advance`](Self::advance).
     pub fn next_pyramid(&self) -> &[GrayImage] {
         &self.tracker.next_pyramid
     }
@@ -1300,8 +1398,10 @@ impl TrackerContext {
 /// - [`TrackResult::error`] is the mean absolute residual in the input unit.
 /// - Positions, `fb_threshold` and [`CONVERGENCE_EPSILON`] are in pixels.
 ///
+/// Per frame, call [`advance`](Self::advance) with the new frame, or
+/// [`prepare`](Self::prepare) with a frame pair, as for [`TrackerContext`].
 /// Create the context with [`with_capacity`](Self::with_capacity) to keep
-/// allocation out of the per-frame path, as for [`TrackerContext`].
+/// allocation out of the per-frame path.
 #[derive(Default)]
 pub struct FloatTrackerContext {
     tracker: Tracker<FloatPyramidLevel>,
@@ -1340,14 +1440,38 @@ impl FloatTrackerContext {
         );
         build_float_pyramid_into(prev, levels, &mut self.tracker.prev_pyramid);
         build_float_pyramid_into(next, levels, &mut self.tracker.next_pyramid);
+        self.tracker.built_next();
     }
 
-    /// The previous-frame pyramid built by the last [`prepare`](Self::prepare).
+    /// Moves to the next frame pair: the pyramid of the last next frame
+    /// becomes the previous-frame pyramid, by swapping buffers, and the
+    /// next-frame pyramid is built from `frame`. The results equal those of
+    /// `prepare(last_next, frame, levels)` bit for bit with one pyramid build
+    /// instead of two, and the steady state performs no heap allocation.
+    /// Without a reusable last frame, the pyramids are built as described
+    /// for [`TrackerContext::advance`].
+    pub fn advance(&mut self, frame: FloatImageView<'_>, levels: usize) {
+        self.tracker.advance(
+            frame.dimensions(),
+            levels,
+            |pyramid| build_float_pyramid_into(frame, levels, pyramid),
+            |base, pyramid| {
+                let (width, height) = base.dimensions();
+                let base = FloatImageView::new(base.as_raw(), width, height)
+                    .expect("the base level is a copy of a validated frame");
+                build_float_pyramid_into(base, levels, pyramid);
+            },
+        );
+    }
+
+    /// The previous-frame pyramid built by the last [`prepare`](Self::prepare)
+    /// or [`advance`](Self::advance).
     pub fn prev_pyramid(&self) -> &[FloatPyramidLevel] {
         &self.tracker.prev_pyramid
     }
 
-    /// The next-frame pyramid built by the last [`prepare`](Self::prepare).
+    /// The next-frame pyramid built by the last [`prepare`](Self::prepare) or
+    /// [`advance`](Self::advance).
     pub fn next_pyramid(&self) -> &[FloatPyramidLevel] {
         &self.tracker.next_pyramid
     }

@@ -383,6 +383,97 @@ fn steady_state_track_fb_is_allocation_free() {
     assert_eq!(allocs, 0, "steady-state track_fb allocated {allocs} times");
 }
 
+const ADVANCE_PARAMS: TrackParams = TrackParams {
+    window_size: 21,
+    max_iterations: 30,
+    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+};
+
+#[test]
+fn steady_state_advance_is_allocation_free() {
+    let frames = [16, 17, 18].map(|seed| textured(640, 480, seed));
+    let points = lattice(200);
+    let mut ctx = TrackerContext::new();
+    // Warm-up: the first call builds both pyramids, the second swaps them.
+    for frame in &frames[..2] {
+        ctx.advance(frame, 4);
+        ctx.track_fb(&points, None, ADVANCE_PARAMS, DEFAULT_FB_THRESHOLD);
+    }
+    let (allocs, tracked) = allocations(|| {
+        let mut tracked = 0;
+        for frame in frames.iter().cycle().take(6) {
+            ctx.advance(frame, 4);
+            tracked += ctx
+                .track_fb(&points, None, ADVANCE_PARAMS, DEFAULT_FB_THRESHOLD)
+                .len();
+        }
+        tracked
+    });
+    assert_eq!(tracked, 6 * points.len());
+    assert_eq!(
+        allocs, 0,
+        "steady-state advance+track_fb allocated {allocs} times"
+    );
+}
+
+#[test]
+fn reserved_advance_does_not_allocate_from_the_first_frame() {
+    let frames = [19, 20, 21].map(|seed| textured(640, 480, seed));
+    let points = lattice(300);
+    let capacity = TrackerCapacity {
+        width: 640,
+        height: 480,
+        levels: 4,
+        window_size: 21,
+        points: points.len(),
+    };
+    let mut ctx = TrackerContext::with_capacity(capacity);
+    let (allocs, tracked) = allocations(|| {
+        let mut tracked = 0;
+        for frame in frames.iter().cycle().take(5) {
+            ctx.advance(frame, 4);
+            tracked += ctx
+                .track_fb(&points, None, ADVANCE_PARAMS, DEFAULT_FB_THRESHOLD)
+                .len();
+        }
+        tracked
+    });
+    assert_eq!(tracked, 5 * points.len());
+    assert_eq!(allocs, 0, "reserved advance allocated {allocs} times");
+
+    let celsius: Vec<Vec<f32>> = [22, 23, 24]
+        .into_iter()
+        .map(|seed| {
+            textured(640, 480, seed)
+                .as_raw()
+                .iter()
+                .map(|&v| 30.0 + v as f32 * 0.004)
+                .collect()
+        })
+        .collect();
+    let mut ctx = FloatTrackerContext::with_capacity(capacity);
+    let (allocs, tracked) = allocations(|| {
+        let mut tracked = 0;
+        for frame in celsius.iter().cycle().take(5) {
+            ctx.advance(FloatImageView::new(frame, 640, 480).unwrap(), 4);
+            tracked += ctx
+                .track_fb(
+                    &points,
+                    None,
+                    TrackParams {
+                        min_eigen_threshold: 1e-6,
+                        ..ADVANCE_PARAMS
+                    },
+                    DEFAULT_FB_THRESHOLD,
+                )
+                .len();
+        }
+        tracked
+    });
+    assert_eq!(tracked, 5 * points.len());
+    assert_eq!(allocs, 0, "reserved f32 advance allocated {allocs} times");
+}
+
 #[test]
 fn reserved_float_detection_does_not_allocate_on_any_content() {
     let frames: Vec<(u32, u32, Vec<f32>)> = [(640u32, 480u32, 11u32), (320, 240, 12), (5, 4, 13)]

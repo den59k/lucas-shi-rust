@@ -1,16 +1,23 @@
 //! Criterion bench for the per-frame track step at 640x480.
 //!
-//! Compares the allocating free-function path ("before" the zero-alloc
-//! refactor: fresh pyramids + fresh scratch every frame) against the
-//! buffer-reusing `TrackerContext` path ("after"), across 50/150/300 points and
-//! with/without an initial guess.
+//! `track_step_640x480` compares the allocating free-function path ("before"
+//! the zero-alloc refactor: fresh pyramids + fresh scratch every frame) against
+//! the buffer-reusing `TrackerContext` path ("after"), across 50/150/300 points
+//! and with/without an initial guess.
+//!
+//! `frame_step_640x480` compares the two per-frame forms of `TrackerContext`:
+//! `prepare(last, frame)`, which builds both pyramids, against
+//! `advance(frame)`, which reuses the last frame's pyramid. Each iteration is
+//! one new frame, alternating between two frames; `pyramids` times the pyramid
+//! step alone, `track_fb/150` adds forward-backward tracking of 150 points.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackerContext, build_pyramid, calc_optical_flow_ex,
+    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackerContext, build_pyramid,
+    calc_optical_flow_ex,
 };
 
 const W: u32 = 640;
@@ -123,6 +130,45 @@ fn bench_tracking(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_frame_step(c: &mut Criterion) {
+    let first = textured(1);
+    let frames = [first.clone(), shift(&first, 3.0, 2.0)];
+    let points = lattice(150);
+
+    let mut group = c.benchmark_group("frame_step_640x480");
+    for tracking in [false, true] {
+        let case = if tracking { "track_fb/150" } else { "pyramids" };
+
+        let mut ctx = TrackerContext::new();
+        let mut index = 0;
+        group.bench_function(BenchmarkId::new("prepare", case), |b| {
+            b.iter(|| {
+                index ^= 1;
+                ctx.prepare(&frames[index ^ 1], &frames[index], LEVELS);
+                if tracking {
+                    black_box(ctx.track_fb(&points, None, PARAMS, DEFAULT_FB_THRESHOLD));
+                }
+                black_box(ctx.next_pyramid());
+            });
+        });
+
+        let mut ctx = TrackerContext::new();
+        ctx.advance(&frames[0], LEVELS);
+        let mut index = 0;
+        group.bench_function(BenchmarkId::new("advance", case), |b| {
+            b.iter(|| {
+                index ^= 1;
+                ctx.advance(&frames[index], LEVELS);
+                if tracking {
+                    black_box(ctx.track_fb(&points, None, PARAMS, DEFAULT_FB_THRESHOLD));
+                }
+                black_box(ctx.next_pyramid());
+            });
+        });
+    }
+    group.finish();
+}
+
 /// Local shift helper (bench has no access to the test helpers).
 fn shift(src: &GrayImage, sx: f32, sy: f32) -> GrayImage {
     let (w, h) = src.dimensions();
@@ -151,5 +197,5 @@ fn shift(src: &GrayImage, sx: f32, sy: f32) -> GrayImage {
     out
 }
 
-criterion_group!(benches, bench_tracking);
+criterion_group!(benches, bench_tracking, bench_frame_step);
 criterion_main!(benches);

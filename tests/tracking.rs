@@ -3,9 +3,9 @@
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, Grid, TrackParams, TrackStatus,
-    TrackerContext, build_pyramid, calc_optical_flow_ex, calc_optical_flow_fb,
-    good_features_to_track_grid,
+    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, Grid, TrackParams, TrackResult,
+    TrackStatus, TrackerCapacity, TrackerContext, build_pyramid, calc_optical_flow_ex,
+    calc_optical_flow_fb, good_features_to_track_grid,
 };
 
 const WIN: usize = 21;
@@ -295,6 +295,141 @@ fn context_matches_free_functions() {
         assert_eq!(a.pos, b.pos);
         assert_eq!(a.status, b.status);
     }
+}
+
+/// Bit patterns of every field, so that equal results are identical, not
+/// merely equal as floats.
+fn bits(results: &[TrackResult]) -> Vec<(u32, u32, TrackStatus, u32)> {
+    results
+        .iter()
+        .map(|r| {
+            (
+                r.pos.0.to_bits(),
+                r.pos.1.to_bits(),
+                r.status,
+                r.error.to_bits(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn advance_matches_prepare_on_a_frame_sequence() {
+    let base = textured(320, 240);
+    let first = shift(&base, 2.5, -1.25);
+    let frames = [
+        base.clone(),
+        first.clone(),
+        rotate(&first, 0.02, 150.0, 110.0),
+    ];
+    let start = vec![
+        (160.0f32, 120.0),
+        (90.0, 80.0),
+        (210.0, 160.0),
+        (40.0, 200.0),
+        (300.0, 30.0),
+        (5.0, 5.0),
+    ];
+    let predicted_shift = (2.0, -1.0);
+
+    // Per-frame user: the last frame is kept and both pyramids are rebuilt.
+    let mut prepared = TrackerContext::new();
+    let mut prepared_points = start.clone();
+    // Per-frame user of `advance`: only the new frame is passed.
+    let mut advanced = TrackerContext::new();
+    let mut advanced_points = start.clone();
+    advanced.advance(&frames[0], 4);
+
+    for pair in frames.windows(2) {
+        prepared.prepare(&pair[0], &pair[1], 4);
+        advanced.advance(&pair[1], 4);
+        assert_eq!(advanced.prev_pyramid(), prepared.prev_pyramid());
+        assert_eq!(advanced.next_pyramid(), prepared.next_pyramid());
+
+        let predicted: Vec<(f32, f32)> = prepared_points
+            .iter()
+            .map(|&(x, y)| (x + predicted_shift.0, y + predicted_shift.1))
+            .collect();
+        let expected = prepared
+            .track_fb(&prepared_points, None, PARAMS, DEFAULT_FB_THRESHOLD)
+            .to_vec();
+        let expected_guessed = bits(prepared.track(&prepared_points, Some(&predicted), PARAMS));
+        let results = advanced
+            .track_fb(&advanced_points, None, PARAMS, DEFAULT_FB_THRESHOLD)
+            .to_vec();
+        assert_eq!(bits(&results), bits(&expected));
+        assert_eq!(
+            bits(advanced.track(&advanced_points, Some(&predicted), PARAMS)),
+            expected_guessed
+        );
+        assert!(
+            results.iter().any(|r| r.status == TrackStatus::Tracked),
+            "nothing tracked: {results:?}"
+        );
+
+        prepared_points = expected.iter().map(|r| r.pos).collect();
+        advanced_points = results.iter().map(|r| r.pos).collect();
+    }
+}
+
+#[test]
+fn advance_rebuilds_what_it_cannot_reuse() {
+    let a = textured(160, 120);
+    let b = shift(&a, 1.5, 0.5);
+    let c = textured(200, 100);
+    let assert_pyramids = |ctx: &TrackerContext, prev: &GrayImage, next: &GrayImage, levels| {
+        assert_eq!(ctx.prev_pyramid(), build_pyramid(prev, levels));
+        assert_eq!(ctx.next_pyramid(), build_pyramid(next, levels));
+    };
+
+    let mut ctx = TrackerContext::new();
+    // No last frame: both pyramids show the first frame.
+    ctx.advance(&a, 3);
+    assert_pyramids(&ctx, &a, &a, 3);
+    // Fewer and more levels: the previous pyramid is rebuilt from the last frame.
+    ctx.advance(&b, 2);
+    assert_pyramids(&ctx, &a, &b, 2);
+    ctx.advance(&a, 4);
+    assert_pyramids(&ctx, &b, &a, 4);
+    // More levels than the frame size allows behave like the largest count.
+    ctx.advance(&b, 40);
+    assert_pyramids(&ctx, &a, &b, 40);
+    ctx.advance(&a, 30);
+    assert_pyramids(&ctx, &b, &a, 30);
+    // A frame of another size starts over.
+    ctx.advance(&c, 3);
+    assert_pyramids(&ctx, &c, &c, 3);
+    // `prepare` sets the last frame as well.
+    ctx.prepare(&a, &b, 3);
+    ctx.advance(&a, 3);
+    assert_pyramids(&ctx, &b, &a, 3);
+
+    // Reserved pyramids hold no frame yet.
+    let capacity = TrackerCapacity {
+        width: 160,
+        height: 120,
+        levels: 3,
+        window_size: WIN,
+        points: 10,
+    };
+    let mut reserved = TrackerContext::with_capacity(capacity);
+    reserved.advance(&b, 3);
+    assert_pyramids(&reserved, &b, &b, 3);
+    // Reserving more levels keeps the last frame.
+    reserved.reserve(TrackerCapacity {
+        levels: 5,
+        ..capacity
+    });
+    reserved.advance(&a, 5);
+    assert_pyramids(&reserved, &b, &a, 5);
+    // Reserving another frame size discards it, also for frames of that size.
+    reserved.reserve(TrackerCapacity {
+        width: 200,
+        height: 100,
+        ..capacity
+    });
+    reserved.advance(&c, 3);
+    assert_pyramids(&reserved, &c, &c, 3);
 }
 
 #[test]
