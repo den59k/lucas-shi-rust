@@ -13,7 +13,7 @@ High-performance Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi
 - 🔍 Shi-Tomasi feature detection, plus grid-based detection for uniform coverage
 - ♻️ Zero-allocation steady-state path (`TrackerContext`, `DetectorContext`) for real-time per-frame tracking, with up-front capacity reservation
 - 🌡️ f32 pipeline for images in physical units, e.g. thermal frames in °C, without 8-bit quantization
-- ⚡ SIMD-accelerated gradients and pyramid: AVX2 (x86), NEON (aarch64), `simd128` (wasm)
+- ⚡ Fixed-point SIMD tracking kernels (SSE2/AVX2 on x86, `simd128` in wasm) with results bit-identical across targets; SIMD gradients and pyramid: AVX2 (x86), NEON (aarch64), `simd128` (wasm)
 - 🌐 Built on the [`image`](https://crates.io/crates/image) crate; WebAssembly-ready
 
 ## Usage
@@ -21,7 +21,7 @@ High-performance Rust implementation of Lucas-Kanade optical flow and Shi-Tomasi
 Add to your `Cargo.toml`:
 ```toml
 [dependencies]
-optical-flow-lk = "0.5"
+optical-flow-lk = "0.6"
 ```
 
 Basic example — detect corners in one frame and track them into the next:
@@ -77,6 +77,26 @@ ctx.advance(frame, 4);
 let results = ctx.track_fb(&points, None, params, DEFAULT_FB_THRESHOLD);
 // Points flagged `TrackStatus::FbInconsistent` failed the round-trip.
 ```
+
+The context computes each frame's Scharr gradients once and keeps them with
+its pyramid, so the backward pass of one frame and the forward pass of the
+next share them. [`TrackOptions`] tunes a call further: `fb_levels` runs the
+backward pass over the finest levels only, which on a phone makes `track_fb`
+with one level about 30% cheaper, and `start_level` skips coarse levels when
+a prediction is already close:
+
+```rust
+use optical_flow_lk::{TrackOptions, DEFAULT_FB_THRESHOLD};
+
+const OPTIONS: TrackOptions = TrackOptions::new().with_fb_levels(1);
+let results = ctx.track_fb_with(&points, None, params, DEFAULT_FB_THRESHOLD, OPTIONS);
+```
+
+A single-level check is slightly more permissive: on the bundled example
+pair it accepts 14-16 of 354 points that the full check rejects, and rejects
+0-2 that it accepts.
+
+[`TrackOptions`]: https://docs.rs/optical-flow-lk/latest/optical_flow_lk/struct.TrackOptions.html
 
 `advance(frame, 4)` gives the same results, bit for bit, as
 `prepare(&last_frame, frame, 4)`, which builds both pyramids from an explicit
@@ -169,26 +189,58 @@ and 2.9-3.1x faster under WASI ([comparison](benches/results/v0.3.1-vs-current-2
 
 ## Performance
 
-Measured against OpenCV 4.11 on the bundled 720×405 frame pair at 0.5.0 on
-2026-10-20. The harness, parameters and caveats are in
-[`benches/opencv-compare/`](benches/opencv-compare/).
+### Per-frame tracking
+
+The step of a real-time front-end: `TrackerContext::advance` with the new
+frame, then `track_fb` of the strongest corners, on synthetic textured frames
+3 px apart, 4 levels, 30 iterations. Measured for 0.6.0 on 2026-10-20, in
+alternation with 0.5.1.
 
 On a phone, the deployment target: Xiaomi 11T (MediaTek Dimensity 1200,
-arm64), Android 14, Chrome 155. Medians per call over 100 samples of 5 calls,
-steady-state rounds after warm-up.
+arm64), Android 14, Chrome 155, the web demo's `?bench=1` mode at 360×640.
+Medians per step over 60 samples of 5 steps, after the CPU clock ramped up.
+
+| Points, window | 0.5.1 | 0.6.0 | 0.6.0, `fb_levels` 1 |
+|---|---:|---:|---:|
+| 44, 13 px | 2.04 ms | 1.00 ms | 0.72 ms |
+| 44, 21 px | 3.46 ms | 1.46 ms | 1.06 ms |
+| 150, 13 px | 6.24 ms | 2.66 ms | 1.76 ms |
+| 150, 21 px | 11.38 ms | 4.38 ms | 2.84 ms |
+
+Each tracked point costs 2.5-2.7x less than in 0.5.1. On a desktop, AMD Ryzen
+9 9900X, `benches/tracking.rs` (`regime`) at 360×640 with 150 points and a
+21 px window:
+
+| | 0.5.1 | 0.6.0 | 0.6.0, `fb_levels` 1 |
+|---|---:|---:|---:|
+| native (AVX2) | 2.82 ms | 0.81 ms | 0.53 ms |
+| wasm `simd128`, Node 24 WASI | 3.81 ms | 1.57 ms | 1.00 ms |
+
+All cases, 640×480 included, are in the [changelog](CHANGELOG.md).
+
+### Against OpenCV
+
+Measured against OpenCV 4.11 on the bundled 720×405 frame pair; every row
+re-measured for 0.6.0 on 2026-10-20. The harness, parameters and caveats are
+in [`benches/opencv-compare/`](benches/opencv-compare/). Tracking is both
+pyramids plus Lucas-Kanade for 200 points, 21 px window, no
+forward-backward check.
+
+On the phone above. Medians per call over 100 samples of 5 calls,
+steady-state runs; 0.5.1 measured 2.5 and 13.0 ms in the same session.
 
 | | Detect, ms | Track 200 points, ms |
 |---|---:|---:|
-| this crate, wasm `simd128` | 2.9 | 14.7 |
-| OpenCV.js 4.11 (wasm, scalar build) | 9.9 | 16.1 |
+| this crate, wasm `simd128` | 2.5 | 5.0 |
+| OpenCV.js 4.11 (wasm, scalar build) | 8.6 | 14.1 |
 
-On a desktop, AMD Ryzen 9 9900X, wasm under Node 24. Medians of 100 calls.
+On the desktop above, wasm under Node 24. Medians of 100 calls.
 
 | | Detect, ms | Track 200 points, ms |
 |---|---:|---:|
-| this crate, wasm `simd128` | 1.1 | 4.2 |
+| this crate, wasm `simd128` | 1.1 | 1.8 |
 | OpenCV.js 4.11 (wasm, scalar build) | 2.5 | 5.8 |
-| this crate, native (AVX2) | 0.7 | 3.4 |
+| this crate, native (AVX2) | 0.7 | 0.9 |
 | OpenCV native, 1 thread | 2.0 | 2.3 |
 
 The desktop wasm detection figure was 0.8 ms at 0.4.1. The grouped
@@ -200,6 +252,12 @@ Corners agree with OpenCV's to the pixel: every corner this crate finds has an
 OpenCV Scharr corner within 1.5 px, and 99% of OpenCV's have one of this
 crate's. Tracked endpoints agree to a median of 0.004 px on points both
 libraries track.
+
+Since 0.6.0 the 8-bit tracker computes its windows in fixed point on x86 and
+on wasm with `simd128`, bit for bit the same on every target; positions
+differ from the f32 arithmetic of 0.5 by a median of 0.0003 px on the
+bundled pair. `TrackKernel::Reference` selects the f32 arithmetic, see
+[`TrackOptions`].
 
 ## Live demo
 
@@ -213,11 +271,11 @@ Source and build instructions are in [`web-demo/`](web-demo/).
 
 ## WebAssembly
 
-The hot image kernels — the Scharr gradients and the pyramid downsample — have
-hand-written `simd128` paths that are selected automatically on `wasm32`
-— **but only when the target is built with SIMD enabled**, since WASM has no
-runtime feature detection. The bundled [`.cargo/config.toml`](.cargo/config.toml)
-sets this for you:
+The hot image kernels — the fixed-point tracking windows, the Scharr
+gradients and the pyramid downsample — have hand-written `simd128` paths that
+are selected automatically on `wasm32` — **but only when the target is built
+with SIMD enabled**, since WASM has no runtime feature detection. The bundled
+[`.cargo/config.toml`](.cargo/config.toml) sets this for you:
 
 ```toml
 [target.wasm32-unknown-unknown]
@@ -231,8 +289,9 @@ up), pass it yourself:
 RUSTFLAGS="-C target-feature=+simd128" cargo build --release --target wasm32-unknown-unknown
 ```
 
-Without `+simd128` the crate still works, falling back to scalar loops. For
+Without `+simd128` the crate still works, falling back to scalar loops, and
+the 8-bit tracker uses its f32 arithmetic (`TrackKernel::FixedPoint` selects
+the scalar fixed-point kernel, with the results of the `simd128` build). For
 production WASM, also run `wasm-opt -O3` on the output (`wasm-pack` does this
-automatically). On a 640×480 per-frame track step, the `simd128` build plus the
-bounds-check-free bilinear sampler is roughly **2× faster** than the scalar
-build in V8 (Node).
+automatically). Tracking 200 points on the bundled pair, the `simd128` build
+is **3× faster** than the scalar build in V8 (Node): 1.8 against 5.5 ms.

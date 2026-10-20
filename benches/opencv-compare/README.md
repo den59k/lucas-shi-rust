@@ -233,6 +233,64 @@ texture 320x240 812 vs 809 µs, texture 640x480 3.45 vs 3.41 ms, low contrast
 under WASI, and on the phone sits between 0.4.1 and `main`. Native code is
 unchanged by it.
 
+## Results, 2026-10-20: 0.6.0
+
+Same machine, inputs, parameters and toolchains as the 0.5.0 run above.
+0.6.0 tracks 8-bit frames with fixed-point window kernels where the target
+has SIMD kernels for them (SSE2/AVX2 natively, `simd128` in wasm) and keeps
+each frame's gradients with its pyramid; the scalar wasm build has no SIMD
+kernel and still tracks with the f32 reference arithmetic.
+
+### Speed, milliseconds per call
+
+| Build | Detect 0.5.0 | Detect 0.6.0 | Track 0.5.0 | Track 0.6.0 |
+|---|---:|---:|---:|---:|
+| crate, wasm simd128 | 1.10 | 1.08 | 4.21 | **1.82** |
+| crate, wasm scalar | 4.37 | 4.34 | 5.51 | 5.48 |
+| OpenCV.js 4.11, wasm scalar | 2.50 | 2.47 | 5.82 | 5.79 |
+| crate, native | 0.73 | 0.72 | 3.41 | **0.90** |
+| OpenCV native, 1 thread | 2.04 | 2.04 | 2.34 | 2.32 |
+| OpenCV native, 24 threads | 2.06 | 2.04 | 1.02 | 1.00 |
+
+Detection is unchanged. Tracking 200 points (both pyramids plus
+Lucas-Kanade, no forward-backward check) is 2.3x faster in wasm with
+`simd128` and 3.8x faster natively, where the crate, on one thread, now
+tracks 2.6x faster than single-threaded OpenCV and slightly faster than
+OpenCV on 24 threads.
+
+### Parity
+
+Corners are unchanged. The crate tracks the same 142 of 200 points, and on
+the points both libraries track its endpoints agree with native OpenCV to a
+median of 0.0037 px (0.5.0: 0.0039 px); status agreement is 71.5% as
+before, for the reasons given above. The `simd128` build reproduces the
+native results with no status mismatch; its largest coordinate difference,
+3e-5 px, is the rounding of the f32 results through JSON, as in the earlier
+runs. The scalar wasm build, on the f32 reference kernel, differs from the
+native fixed-point endpoints by at most 0.009 px with the same statuses.
+
+### On the phone
+
+The phone page of the 0.5.0 run was rebuilt for this one (scratch, not in
+the repository): the `--target web` `simd128` wrappers of 0.5.1 and 0.6.0
+and OpenCV.js in one page, the frame pair and points of `harness.cjs`, a
+two-second spin first, then each package twice in alternation, 20 warm-up
+calls and 100 samples of 5 calls each, median per call. Xiaomi 11T, Chrome
+155. Two steady runs; the first run of the session, before the clock had
+settled, measured 16.4 and 6.2 ms tracking for 0.5.1 and 0.6.0.
+
+| Build | Detect | Track |
+|---|---:|---:|
+| crate 0.5.1 | 2.52 ms | 13.0 ms |
+| crate 0.6.0 | 2.50-2.52 ms | 4.96-5.00 ms |
+| OpenCV.js 4.11, wasm scalar | 8.56-8.62 ms | 14.1 ms |
+
+On the phone 0.6.0 tracks 2.6x faster than 0.5.1 and 2.8x faster than
+OpenCV.js, and detects 3.4x faster than OpenCV.js. These numbers are lower
+than those of the 0.5.0 phone run (2.9 and 14.7 ms for the crate, 9.9 and
+16.1 ms for OpenCV.js), measured another day; within this session the
+ratios are what counts.
+
 ## Running
 
 ```sh

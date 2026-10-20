@@ -1,5 +1,153 @@
 # Changelog
 
+## 0.6.0 — 2026-10-20
+
+The per-frame tracking step of the 8-bit tracker is 2-3.6x faster, with
+the same API plus additive options. No signature changes, but tracked
+positions change in their last digits on SIMD targets, because the window
+arithmetic is now fixed point there; `TrackKernel::Reference` keeps the
+arithmetic of 0.5.
+
+### Changed
+
+- The 8-bit tracker (`TrackerContext`, `calc_optical_flow_ex`,
+  `calc_optical_flow_fb`) samples and sums its windows in fixed point on x86
+  and x86-64 (SSE2; AVX2 when the CPU has it) and on wasm32 built with
+  `simd128`, following the scheme of OpenCV's `calcOpticalFlowPyrLK`:
+  14-bit integer bilinear weights, 16-bit patches with 5 fractional bits for
+  intensities and 6 for gradients (OpenCV keeps 5; the extra bit removed
+  the one avoidable deviation from 0.5 on the bundled pair), and exact
+  integer window sums of 16-bit products, from `_mm_madd_epi16` /
+  `_mm256_madd_epi16` on x86 and widening multiplies on wasm, which V8
+  turns into multiply-accumulates on arm64. Lanes are moved into i64 totals
+  before they can overflow, for any 8-bit content; this limits fixed-point
+  windows to 127 px. A scalar kernel defines the integers, so fixed-point
+  results are bit for bit identical on every target: a golden record of
+  the bundled pair is checked natively (scalar, SSE2, AVX2), under WASI
+  with and without `simd128`, and the web demo's checksums on a phone in
+  Chrome match the native ones. Other targets, and wider windows, keep the
+  f32 kernel of 0.5, whose results are unchanged bit for bit.
+- NEON kernel: not in 0.6.0. aarch64 keeps the f32 reference kernel under
+  `TrackKernel::Auto`; `TrackKernel::FixedPoint` runs the scalar
+  fixed-point kernel there.
+- Deviation from 0.5 on the bundled 720x405 pair (354 corners, 4 levels,
+  30 iterations): on the points both versions track, positions differ by a
+  median of 0.00027 px with a 13 px window and 0.00019 px with 21 px, and
+  by at most 0.009 / 0.013 px except at two points (4.4 px at 13 px, 1.8 px
+  at 21 px) where the 0.5 result itself moves by 1.7-12 px when the input
+  point moves by 0.0001 px. Statuses agree on 99.4% / 100% of the points
+  with `track` and 98.9% / 99.7% with `track_fb`; the differences are
+  iteration-cap and round-trip decisions of borderline points. On
+  synthetic shifts, a rotation and an affine warp, positions differ by at
+  most 0.01 px and every status agrees. Against OpenCV 4.11 the median
+  endpoint difference is 0.0037 px (0.5: 0.0039 px).
+- The tracker contexts compute each pyramid level's Scharr gradients once
+  per frame, when a pass first needs them, and keep them with the pyramid;
+  `advance` moves them along with the last frame's pyramid. With
+  `track_fb` this halves the gradient work per frame. Results are
+  bit-identical to computing them per pass; the free functions still do.
+- `tests/fixtures/regression.txt`: the 8-bit tracking cases name their
+  kernel, because `Auto` depends on the target. The f32 reference lines
+  are unchanged; new `fixed_track...` lines pin the fixed-point kernel.
+
+### Added
+
+- `TrackOptions` (non-exhaustive, `const` builders, `Default` = previous
+  behaviour) with `track_with` and `track_fb_with` on `TrackerContext` and
+  `FloatTrackerContext`:
+  - `fb_levels`: run the backward pass of the forward-backward check over
+    the finest levels only. It tracks the forward results back, seeded at
+    the original points, as before. On the bundled pair, compared with the
+    full check (fixed point; reference in parentheses): one level accepts
+    14 (15) more points and rejects 2 (0) more at 13 px, and accepts 16 (15)
+    more at 21 px; two levels accept 5-6 more and reject 0-2 more; three
+    levels change at most one point. The occlusion test case is still
+    caught with one level.
+  - `start_level`: start the forward pass below the top of the pyramid,
+    seeded with the prediction, when a motion model is already close.
+    The top level or above is the previous behaviour.
+  - `kernel`: `TrackKernel::{Auto, FixedPoint, Reference}`, the arithmetic
+    of the 8-bit tracker; ignored by `FloatTrackerContext`.
+
+### Performance
+
+The per-frame step of a real-time front-end: `advance` with the new frame,
+then `track` (FB off), `track_fb` (FB all) or `track_fb_with` 2 or 1
+backward levels, of the strongest corners of synthetic textured frames 3 px
+apart, 4 levels, 30 iterations. 0.5.1 and 0.6.0 were run in alternation;
+milliseconds per step.
+
+On a phone, Xiaomi 11T (Dimensity 1200, Cortex-A78), Chrome 155, the web
+demo's `?bench=1` mode at 360x640, medians over 60 samples of 5 steps after
+a two-second spin-up:
+
+| Points, window | FB off 0.5.1 | FB off 0.6.0 | FB all 0.5.1 | FB all 0.6.0 | FB 2 levels | FB 1 level |
+|---|---:|---:|---:|---:|---:|---:|
+| 44, 13 px | 1.08 | 0.68 | 2.04 | 1.00 | 0.80 | 0.72 |
+| 44, 21 px | 1.94 | 0.98 | 3.46 | 1.46 | 1.16 | 1.06 |
+| 150, 13 px | 3.26 | 1.54 | 6.24 | 2.66 | 1.94 | 1.76 |
+| 150, 21 px | 6.16 | 2.50 | 11.38 | 4.38 | 3.22 | 2.84 |
+
+The cost per point (150 against 44 points) drops 2.5-2.8x; a full
+forward-backward step of 150 points with a 21 px window is 2.6x faster, and
+4.0x with a single backward level. The result checksums of every case equal
+those of a native x86 run.
+
+Ryzen 9 9900X, `benches/tracking.rs` (`regime`), means of the Criterion
+estimates of two alternating rounds. Native, AVX2:
+
+| Size | Points, window | FB off 0.5.1 | FB off 0.6.0 | FB all 0.5.1 | FB all 0.6.0 | FB 2 levels | FB 1 level |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 360x640 | 44, 13 px | 0.267 | 0.139 | 0.493 | 0.193 | 0.159 | 0.149 |
+| 360x640 | 44, 21 px | 0.481 | 0.183 | 0.842 | 0.270 | 0.220 | 0.203 |
+| 360x640 | 150, 13 px | 0.807 | 0.306 | 1.520 | 0.505 | 0.378 | 0.338 |
+| 360x640 | 150, 21 px | 1.539 | 0.466 | 2.817 | 0.805 | 0.589 | 0.534 |
+| 640x480 | 44, 13 px | 0.321 | 0.177 | 0.598 | 0.238 | 0.200 | 0.190 |
+| 640x480 | 44, 21 px | 0.548 | 0.226 | 1.029 | 0.331 | 0.263 | 0.246 |
+| 640x480 | 150, 13 px | 0.910 | 0.345 | 1.707 | 0.574 | 0.433 | 0.392 |
+| 640x480 | 150, 21 px | 1.674 | 0.516 | 3.147 | 0.881 | 0.643 | 0.586 |
+
+Node 24 WASI, `simd128`:
+
+| Size | Points, window | FB off 0.5.1 | FB off 0.6.0 | FB all 0.5.1 | FB all 0.6.0 | FB 2 levels | FB 1 level |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 360x640 | 44, 13 px | 0.337 | 0.203 | 0.650 | 0.318 | 0.246 | 0.222 |
+| 360x640 | 44, 21 px | 0.623 | 0.313 | 1.136 | 0.491 | 0.374 | 0.352 |
+| 360x640 | 150, 13 px | 1.042 | 0.531 | 2.011 | 0.944 | 0.657 | 0.586 |
+| 360x640 | 150, 21 px | 2.020 | 0.879 | 3.808 | 1.566 | 1.120 | 1.003 |
+| 640x480 | 44, 13 px | 0.389 | 0.254 | 0.740 | 0.375 | 0.278 | 0.260 |
+| 640x480 | 44, 21 px | 0.692 | 0.356 | 1.296 | 0.571 | 0.433 | 0.400 |
+| 640x480 | 150, 13 px | 1.169 | 0.603 | 2.189 | 1.091 | 0.743 | 0.659 |
+| 640x480 | 150, 21 px | 2.177 | 0.966 | 4.097 | 1.755 | 1.246 | 1.107 |
+
+The earlier `frame_step_640x480` case (lattice points, window 21,
+`track_fb` of 150 points) goes from 3.89 to 1.06 ms natively and from 5.10
+to 2.19 ms under WASI.
+
+The wasm kernel uses widening multiplies because they are fastest on the
+phone. A variant with `i32x4.dot_i16x8_s` over interleaved sample pairs,
+which computes the same integers, was 10-16% slower per step on the phone
+but 37% faster under V8 on x86-64 (150 points, 21 px, FB all: 0.98 against
+1.57 ms under WASI).
+
+Against OpenCV on the bundled pair (`benches/opencv-compare/`, 200 points,
+21 px, both pyramids plus tracking, no FB check), tracking takes 1.82 ms in
+wasm with `simd128` (0.5.0: 4.21), 0.90 ms natively (3.41), and 5.0 ms on
+the phone (0.5.1 in the same session: 13.0; OpenCV.js 14.1). Detection is
+unchanged.
+
+### Benchmarks
+
+- `benches/tracking.rs` adds `regime`: `advance` plus `track` / `track_fb`
+  / `track_fb_with` (1 and 2 backward levels) of the strongest corners on
+  portrait 360x640 and 640x480 frames, 4 levels, windows 13 and 21, 44 and
+  150 points.
+- The web demo has a benchmark mode, `index.html?bench=1`, which times the
+  same step in the browser after spinning the CPU up and reports medians
+  and result checksums in `<pre id="bench">` and `window.__lkbench`.
+- `benches/opencv-compare/` results for 0.6.0, including a phone run; its
+  lockfiles drop the dependencies 0.5.1 moved to `[dev-dependencies]`.
+
 ## 0.5.1 — 2026-10-20
 
 No breaking changes.

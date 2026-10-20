@@ -190,3 +190,20 @@ compares the published 0.3.1 crate with the current 8-bit and f32 pipelines on
 the inputs above, natively and under WASI. Both sides were built from one
 harness source, stored next to the report, against the 0.3.1 source tree and
 this repository; the report lists the build and run order.
+
+## Per-frame tracking
+
+`cargo +stable bench --bench tracking -- regime` times the step of a
+real-time front-end: `TrackerContext::advance` with the next of two frames
+3 px apart, then `track` (`fb_off`), `track_fb` (`fb_all`) or
+`track_fb_with` a backward pass over the finest 1 or 2 levels (`fb_1`,
+`fb_2`) of the strongest corners of the first frame. Frames are smoothed
+hash noise, portrait 360x640 and 640x480, with 4 levels, windows 13 and 21,
+44 and 150 points and 30 iterations. Under WASI the same filter follows
+`--bench --noplot`.
+
+For a release comparison, keep the bench binary of the old revision (Cargo
+reuses the file name) and run old and new in alternation with the same
+`CRITERION_HOME`; the 0.6.0 numbers in the changelog are means of two
+alternating rounds. The web demo's `?bench=1` mode times the same step in a
+browser, see [`web-demo/README.md`](../web-demo/README.md).
