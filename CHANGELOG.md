@@ -14,6 +14,9 @@ No breaking changes.
   through `image` and relied on this crate to enable the codecs now enables
   the features it needs in its own manifest, e.g.
   `image = { version = "0.25", default-features = false, features = ["png"] }`.
+- `nalgebra` moved to `[dev-dependencies]`: only the reference eigensolver in
+  the tests and the SVD baseline in the benches used it. The library has no
+  linear-algebra dependency; the wasm32 normal dependency tree is 6 crates.
 
 ### Added
 

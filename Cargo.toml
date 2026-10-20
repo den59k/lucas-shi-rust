@@ -23,12 +23,13 @@ codegen-units = 1
 # `Luma`, `Pixel`), so it enables no codecs; applications choose their own.
 [dependencies]
 image = { version = "0.25.10", default-features = false }
-nalgebra = "0.34.1"
 
 # Examples, tests and benches decode the bundled PNG frames.
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 imageproc = "0.27.0"
+# Reference eigensolver / SVD for tests and benches only; the library has no linear-algebra dependency.
+nalgebra = "0.34.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = "0.8.2"
