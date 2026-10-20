@@ -1,7 +1,8 @@
 use image::{GrayImage, Rgba, open};
 use imageproc::drawing::{draw_cross_mut, draw_line_segment_mut};
 use optical_flow_lk::{
-    DEFAULT_MIN_EIGEN_THRESHOLD, build_pyramid, calc_optical_flow_ex, good_features_to_track,
+    DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, build_pyramid, calc_optical_flow_ex,
+    good_features_to_track,
 };
 
 fn main() {
@@ -16,24 +17,27 @@ fn main() {
 
     let mut points = good_features_to_track(&prev_frame, 0.1, 5);
     points.truncate(100);
-    let prev_points: Vec<(f32, f32)> = points.iter().map(|&x| (x.0 as f32, x.1 as f32)).collect();
+    let prev_points: Vec<(f32, f32)> = points.iter().map(|corner| corner.position()).collect();
 
     let results = calc_optical_flow_ex(
         &prev_frame_pyr,
         &next_frame_pyr,
         &prev_points,
         None,
-        21,
-        30,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
+        TrackParams {
+            window_size: 21,
+            max_iterations: 30,
+            min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+        },
     );
 
     for (result, prev) in results.iter().zip(prev_points.iter()) {
         draw_line_segment_mut(&mut next_image, result.pos, *prev, Rgba([0, 255, 0, 255]));
     }
 
-    for &(x, y, _) in &points {
-        draw_cross_mut(&mut prev_image, Rgba([255, 0, 0, 255]), x as i32, y as i32);
+    for corner in &points {
+        let (x, y) = (corner.x as i32, corner.y as i32);
+        draw_cross_mut(&mut prev_image, Rgba([255, 0, 0, 255]), x, y);
     }
 
     prev_image

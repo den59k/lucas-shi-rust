@@ -4,19 +4,51 @@ use image::{ImageBuffer, Luma};
 /// Largest input magnitude for which a full 3x3 sum cannot overflow i32.
 const MAX_BOX_SUM_INPUT: i32 = i32::MAX / 9;
 
+use std::ops::Add;
+
 /// Horizontal pass of a centered 3x3 box sum over one row, without dividing:
 /// `dst[x] = src[x - 1] + src[x] + src[x + 1]`. Boundaries include only the
 /// available samples; the caller normalizes by their count when needed. Inputs
 /// must have magnitude <= i32::MAX / 9 so both passes fit in i32.
 #[inline(always)]
 pub fn sum_row_3(src: &[i32], dst: &mut [i32]) {
-    debug_assert_eq!(src.len(), dst.len());
     // Release builds would wrap silently on overflow; catch violations in debug.
     debug_assert!(
         src.iter()
             .all(|&v| v.unsigned_abs() <= MAX_BOX_SUM_INPUT.unsigned_abs()),
         "box sum input exceeds i32::MAX / 9"
     );
+    centered_row_sum(src, dst);
+}
+
+/// Vertical pass of a centered 3x3 box sum: lane-wise sum of the horizontally
+/// summed rows above, at and below the output row. `None` marks a row outside
+/// the image, so boundaries again include only the available samples.
+#[inline(always)]
+pub fn sum_rows_3(above: Option<&[i32]>, center: &[i32], below: Option<&[i32]>, dst: &mut [i32]) {
+    vertical_sum(above, center, below, dst);
+}
+
+/// [`sum_row_3`] for f64 rows, which cannot overflow for finite f32 products.
+#[inline(always)]
+pub fn sum_row_3_f64(src: &[f64], dst: &mut [f64]) {
+    centered_row_sum(src, dst);
+}
+
+/// [`sum_rows_3`] for f64 rows.
+#[inline(always)]
+pub fn sum_rows_3_f64(
+    above: Option<&[f64]>,
+    center: &[f64],
+    below: Option<&[f64]>,
+    dst: &mut [f64],
+) {
+    vertical_sum(above, center, below, dst);
+}
+
+#[inline(always)]
+fn centered_row_sum<T: Copy + Add<Output = T>>(src: &[T], dst: &mut [T]) {
+    debug_assert_eq!(src.len(), dst.len());
     let width = src.len();
     match width {
         0 => return,
@@ -40,11 +72,13 @@ pub fn sum_row_3(src: &[i32], dst: &mut [i32]) {
     }
 }
 
-/// Vertical pass of a centered 3x3 box sum: lane-wise sum of the horizontally
-/// summed rows above, at and below the output row. `None` marks a row outside
-/// the image, so boundaries again include only the available samples.
 #[inline(always)]
-pub fn sum_rows_3(above: Option<&[i32]>, center: &[i32], below: Option<&[i32]>, dst: &mut [i32]) {
+fn vertical_sum<T: Copy + Add<Output = T>>(
+    above: Option<&[T]>,
+    center: &[T],
+    below: Option<&[T]>,
+    dst: &mut [T],
+) {
     debug_assert_eq!(center.len(), dst.len());
     match (above, below) {
         (Some(above), Some(below)) => {

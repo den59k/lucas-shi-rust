@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use image::GrayImage;
 use optical_flow_lk::{
-    DEFAULT_MIN_EIGEN_THRESHOLD, TrackStatus, TrackerContext, good_features_to_track,
+    DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackStatus, TrackerContext, good_features_to_track,
 };
 
 const QUALITY: f32 = 0.01;
@@ -16,6 +16,11 @@ const MAX_POINTS: usize = 200;
 const LEVELS: usize = 4;
 const WINDOW: usize = 21;
 const ITERATIONS: usize = 30;
+const PARAMS: TrackParams = TrackParams {
+    window_size: WINDOW,
+    max_iterations: ITERATIONS,
+    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+};
 const WARMUP: usize = 10;
 const REPS: usize = 100;
 
@@ -73,12 +78,12 @@ fn main() {
     let points: Vec<(f32, f32)> = corners
         .iter()
         .take(MAX_POINTS)
-        .map(|&(x, y, _)| (x as f32, y as f32))
+        .map(|corner| corner.position())
         .collect();
     let mut ctx = TrackerContext::new();
     ctx.prepare(&prev, &next, LEVELS);
     let tracks = ctx
-        .track(&points, None, WINDOW, ITERATIONS, DEFAULT_MIN_EIGEN_THRESHOLD)
+        .track(&points, None, PARAMS)
         .to_vec();
 
     let detect = bench(|| {
@@ -86,7 +91,7 @@ fn main() {
     });
     let track = bench(|| {
         ctx.prepare(&prev, &next, LEVELS);
-        std::hint::black_box(ctx.track(&points, None, WINDOW, ITERATIONS, DEFAULT_MIN_EIGEN_THRESHOLD));
+        std::hint::black_box(ctx.track(&points, None, PARAMS));
     });
 
     let mut json = String::new();
@@ -97,8 +102,9 @@ fn main() {
         prev.height()
     );
     json.push_str("\"corners\":[");
-    for (i, &(x, y, s)) in corners.iter().enumerate() {
-        let _ = write!(json, "{}[{x},{y},{}]", if i > 0 { "," } else { "" }, json_f32(s));
+    for (i, c) in corners.iter().enumerate() {
+        let (x, y) = (c.x, c.y);
+        let _ = write!(json, "{}[{x},{y},{}]", if i > 0 { "," } else { "" }, json_f32(c.score));
     }
     json.push_str("],\n\"track_points\":[");
     for (i, &(x, y)) in points.iter().enumerate() {

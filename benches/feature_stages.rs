@@ -34,6 +34,12 @@ type Points = Vec<(u32, u32, f32)>;
 const QUALITY: f32 = 0.05;
 const DISTANCE: u32 = 8;
 
+/// Public detector output as triples, whether a revision returns corners or
+/// triples. Only used outside timing.
+fn triples<C: Into<(u32, u32, f32)>>(corners: Vec<C>) -> Points {
+    corners.into_iter().map(Into::into).collect()
+}
+
 fn sort(points: &mut [(u32, u32, f32)]) {
     points.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(Ordering::Equal));
 }
@@ -100,11 +106,19 @@ fn bench_stages(c: &mut Criterion) {
         let result = detector::spacing(&sorted, DISTANCE, w, h);
         assert_eq!(
             result,
-            detector::good_features_to_track(&case.image, QUALITY, DISTANCE)
+            triples(detector::good_features_to_track(
+                &case.image,
+                QUALITY,
+                DISTANCE
+            ))
         );
         assert_eq!(
             result,
-            optical_flow_lk::good_features_to_track(&case.image, QUALITY, DISTANCE)
+            triples(optical_flow_lk::good_features_to_track(
+                &case.image,
+                QUALITY,
+                DISTANCE
+            ))
         );
         // Full results outside timing allow coordinate/ranking and score comparisons.
         let points = result

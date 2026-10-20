@@ -9,8 +9,9 @@ fn main() {
     let points = good_features_to_track(&prev_frame, 0.1, 5);
 
     print!("{}", points.len());
-    for &(x, y, _) in &points {
-        draw_cross_mut(&mut prev_image, Rgba([255, 0, 0, 255]), x as i32, y as i32);
+    for corner in &points {
+        let (x, y) = (corner.x as i32, corner.y as i32);
+        draw_cross_mut(&mut prev_image, Rgba([255, 0, 0, 255]), x, y);
     }
 
     prev_image.save("examples/output_features.png").unwrap()

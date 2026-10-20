@@ -4,8 +4,8 @@
 
 use image::{imageops, GrayImage, ImageBuffer};
 use optical_flow_lk::{
-    good_features_to_track, DetectorContext, TrackStatus, TrackerContext, DEFAULT_FB_THRESHOLD,
-    DEFAULT_MIN_EIGEN_THRESHOLD,
+    good_features_to_track, DetectorContext, Grid, TrackParams, TrackStatus, TrackerContext,
+    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD,
 };
 use wasm_bindgen::prelude::*;
 
@@ -94,9 +94,7 @@ impl Tracker {
         let feats = match self.prev.as_ref() {
             Some(prev) => self.detector.detect_grid(
                 prev,
-                cols,
-                rows,
-                max_per_cell,
+                Grid { cols, rows, max_per_cell },
                 quality,
                 min_distance,
                 &existing,
@@ -104,8 +102,8 @@ impl Tracker {
             None => return self.points.len(),
         };
 
-        for &(x, y, _q) in feats {
-            self.points.push((x as f32, y as f32));
+        for corner in feats {
+            self.points.push(corner.position());
             self.vel.push((0.0, 0.0));
         }
         self.points.len()
@@ -142,14 +140,12 @@ impl Tracker {
                 .map(|(&(px, py), &(vx, vy))| (px + vx, py + vy))
                 .collect();
 
-            let results = self.ctx.track_fb(
-                &self.points,
-                Some(&predicted),
-                self.window,
-                self.iters,
-                self.min_eigen,
-                self.fb_threshold,
-            );
+            let params = TrackParams {
+                window_size: self.window,
+                max_iterations: self.iters,
+                min_eigen_threshold: self.min_eigen,
+            };
+            let results = self.ctx.track_fb(&self.points, Some(&predicted), params, self.fb_threshold);
 
             let mut kept = Vec::with_capacity(results.len());
             let mut kept_vel = Vec::with_capacity(results.len());
@@ -209,11 +205,11 @@ impl Tracker {
         // Pick the corner closest to the tap (coords are relative to the crop).
         let (tx, ty) = ((cx - x0) as f32, (cy - y0) as f32);
         let best = feats.iter().min_by(|a, b| {
-            let da = (a.0 as f32 - tx).powi(2) + (a.1 as f32 - ty).powi(2);
-            let db = (b.0 as f32 - tx).powi(2) + (b.1 as f32 - ty).powi(2);
+            let da = (a.x as f32 - tx).powi(2) + (a.y as f32 - ty).powi(2);
+            let db = (b.x as f32 - tx).powi(2) + (b.y as f32 - ty).powi(2);
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         })?;
 
-        Some((x0 as f32 + best.0 as f32, y0 as f32 + best.1 as f32))
+        Some((x0 as f32 + best.x as f32, y0 as f32 + best.y as f32))
     }
 }

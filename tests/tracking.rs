@@ -3,12 +3,18 @@
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackStatus, TrackerContext, build_pyramid,
-    calc_optical_flow_ex, calc_optical_flow_fb, good_features_to_track_grid,
+    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, Grid, TrackParams, TrackStatus,
+    TrackerContext, build_pyramid, calc_optical_flow_ex, calc_optical_flow_fb,
+    good_features_to_track_grid,
 };
 
 const WIN: usize = 21;
 const ITERS: usize = 30;
+const PARAMS: TrackParams = TrackParams {
+    window_size: WIN,
+    max_iterations: ITERS,
+    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+};
 
 /// Deterministic, band-limited texture (noise smoothed with a few box blurs) so
 /// the pyramid does not alias and LK behaves like it would on a real image.
@@ -116,15 +122,7 @@ fn integer_and_subpixel_shift_under_0_2px() {
         let next = shift(&prev, sx, sy);
         let pp = build_pyramid(&prev, 4);
         let np = build_pyramid(&next, 4);
-        let res = calc_optical_flow_ex(
-            &pp,
-            &np,
-            &pts,
-            None,
-            WIN,
-            ITERS,
-            DEFAULT_MIN_EIGEN_THRESHOLD,
-        );
+        let res = calc_optical_flow_ex(&pp, &np, &pts, None, PARAMS);
 
         for (i, r) in res.iter().enumerate() {
             let exp = (pts[i].0 + sx, pts[i].1 + sy);
@@ -152,15 +150,7 @@ fn small_rotation_tracks_accurately() {
     ];
     let pp = build_pyramid(&prev, 4);
     let np = build_pyramid(&next, 4);
-    let res = calc_optical_flow_ex(
-        &pp,
-        &np,
-        &pts,
-        None,
-        WIN,
-        ITERS,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    );
+    let res = calc_optical_flow_ex(&pp, &np, &pts, None, PARAMS);
 
     let (s, c) = angle.sin_cos();
     for (i, r) in res.iter().enumerate() {
@@ -183,15 +173,7 @@ fn point_leaving_frame_is_out_of_bounds() {
     let predicted = vec![(196.0f32, 100.0)];
     let pp = build_pyramid(&prev, 4);
     let np = build_pyramid(&next, 4);
-    let res = calc_optical_flow_ex(
-        &pp,
-        &np,
-        &pts,
-        Some(&predicted),
-        WIN,
-        ITERS,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    );
+    let res = calc_optical_flow_ex(&pp, &np, &pts, Some(&predicted), PARAMS);
 
     assert_eq!(res[0].status, TrackStatus::OutOfBounds);
     assert!(res[0].error.is_infinite());
@@ -205,15 +187,7 @@ fn flat_region_is_low_texture() {
     let pts = vec![(100.0f32, 100.0)];
     let pp = build_pyramid(&prev, 4);
     let np = build_pyramid(&next, 4);
-    let res = calc_optical_flow_ex(
-        &pp,
-        &np,
-        &pts,
-        None,
-        WIN,
-        ITERS,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    );
+    let res = calc_optical_flow_ex(&pp, &np, &pts, None, PARAMS);
 
     assert_eq!(res[0].status, TrackStatus::LowTexture);
 }
@@ -229,24 +203,8 @@ fn prediction_improves_large_displacement() {
     let pp = build_pyramid(&prev, 4);
     let np = build_pyramid(&next, 4);
 
-    let with = calc_optical_flow_ex(
-        &pp,
-        &np,
-        &pts,
-        Some(&predicted),
-        WIN,
-        ITERS,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    );
-    let without = calc_optical_flow_ex(
-        &pp,
-        &np,
-        &pts,
-        None,
-        WIN,
-        ITERS,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    );
+    let with = calc_optical_flow_ex(&pp, &np, &pts, Some(&predicted), PARAMS);
+    let without = calc_optical_flow_ex(&pp, &np, &pts, None, PARAMS);
 
     let mut improved = 0;
     for (i, w) in with.iter().enumerate() {
@@ -305,16 +263,7 @@ fn fb_check_catches_occlusion() {
     let np = build_pyramid(&next, 4);
     let pts = vec![open, hidden];
 
-    let res = calc_optical_flow_fb(
-        &pp,
-        &np,
-        &pts,
-        None,
-        WIN,
-        ITERS,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-        DEFAULT_FB_THRESHOLD,
-    );
+    let res = calc_optical_flow_fb(&pp, &np, &pts, None, PARAMS, DEFAULT_FB_THRESHOLD);
 
     assert_eq!(
         res[0].status,
@@ -336,19 +285,11 @@ fn context_matches_free_functions() {
 
     let pp = build_pyramid(&prev, 4);
     let np = build_pyramid(&next, 4);
-    let free = calc_optical_flow_ex(
-        &pp,
-        &np,
-        &pts,
-        None,
-        WIN,
-        ITERS,
-        DEFAULT_MIN_EIGEN_THRESHOLD,
-    );
+    let free = calc_optical_flow_ex(&pp, &np, &pts, None, PARAMS);
 
     let mut ctx = TrackerContext::new();
     ctx.prepare(&prev, &next, 4);
-    let ctx_res = ctx.track(&pts, None, WIN, ITERS, DEFAULT_MIN_EIGEN_THRESHOLD);
+    let ctx_res = ctx.track(&pts, None, PARAMS);
 
     for (a, b) in free.iter().zip(ctx_res.iter()) {
         assert_eq!(a.pos, b.pos);
@@ -361,13 +302,23 @@ fn grid_detection_is_uniform_and_respects_occupancy() {
     let img = textured(320, 240);
     let (cols, rows, max_per_cell, min_dist) = (4u32, 3u32, 3u32, 8u32);
 
-    let pts = good_features_to_track_grid(&img, cols, rows, max_per_cell, 0.05, min_dist, &[]);
+    let pts = good_features_to_track_grid(
+        &img,
+        Grid {
+            cols,
+            rows,
+            max_per_cell,
+        },
+        0.05,
+        min_dist,
+        &[],
+    );
 
     // Spacing respected.
     for i in 0..pts.len() {
         for j in (i + 1)..pts.len() {
-            let d2 = (pts[i].0 as i32 - pts[j].0 as i32).pow(2)
-                + (pts[i].1 as i32 - pts[j].1 as i32).pow(2);
+            let d2 = (pts[i].x as i32 - pts[j].x as i32).pow(2)
+                + (pts[i].y as i32 - pts[j].y as i32).pow(2);
             assert!(
                 d2 >= (min_dist * min_dist) as i32,
                 "points closer than min_distance"
@@ -377,7 +328,7 @@ fn grid_detection_is_uniform_and_respects_occupancy() {
 
     // Per-cell budget respected and coverage is broad.
     let mut counts = vec![0u32; (cols * rows) as usize];
-    for &(x, y, _) in &pts {
+    for &Corner { x, y, .. } in &pts {
         let c = (x * cols / 320).min(cols - 1);
         let r = (y * rows / 240).min(rows - 1);
         counts[(r * cols + c) as usize] += 1;
@@ -390,14 +341,38 @@ fn grid_detection_is_uniform_and_respects_occupancy() {
 
     // A cell pre-filled by existing points yields no new detections there.
     let existing: Vec<(f32, f32)> = vec![(20.0, 20.0), (40.0, 30.0), (60.0, 10.0)];
-    let pts2 =
-        good_features_to_track_grid(&img, cols, rows, max_per_cell, 0.05, min_dist, &existing);
+    let pts2 = good_features_to_track_grid(
+        &img,
+        Grid {
+            cols,
+            rows,
+            max_per_cell,
+        },
+        0.05,
+        min_dist,
+        &existing,
+    );
     let in_cell0 = pts2
         .iter()
-        .filter(|&&(x, y, _)| x * cols / 320 == 0 && y * rows / 240 == 0)
+        .filter(|corner| corner.x * cols / 320 == 0 && corner.y * rows / 240 == 0)
         .count();
     assert_eq!(
         in_cell0, 0,
         "cell filled by existing_points must be skipped"
     );
+}
+
+#[test]
+#[should_panic(expected = "frames must have the same size")]
+fn context_frames_of_different_size_panic() {
+    TrackerContext::new().prepare(&GrayImage::new(40, 30), &GrayImage::new(30, 40), 2);
+}
+
+#[test]
+#[should_panic(expected = "same level sizes")]
+fn larger_next_pyramid_panics_instead_of_misreading_it() {
+    // A larger next frame used to be read with the previous frame's width.
+    let prev = build_pyramid(&textured(64, 48), 2);
+    let next = build_pyramid(&textured(80, 48), 2);
+    calc_optical_flow_ex(&prev, &next, &[(30.0, 20.0)], None, PARAMS);
 }

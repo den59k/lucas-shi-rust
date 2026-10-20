@@ -310,10 +310,7 @@ fn load_case() -> LkCase {
     let grad_pyramid = build_gradient_pyramid(&prev_pyramid);
     let mut points = good_features_to_track(&prev_frame, 0.1, 5);
     points.truncate(100);
-    let prev_points = points
-        .into_iter()
-        .map(|(x, y, _)| (x as f32, y as f32))
-        .collect();
+    let prev_points = points.into_iter().map(|corner| corner.position()).collect();
 
     (prev_pyramid, next_pyramid, grad_pyramid, prev_points)
 }
