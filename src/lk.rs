@@ -3,7 +3,8 @@ use image::{GrayImage, ImageBuffer, Luma, Pixel};
 use crate::features::reserve_total;
 use crate::float_image::FloatImageView;
 use crate::pyramid::{
-    build_float_pyramid_into, build_pyramid_into, pyramid_level_count, reserve_pyramid,
+    build_float_pyramid_into, build_pyramid_into, level_dimensions, pyramid_level_count,
+    reserve_pyramid,
 };
 use crate::utils::fast_gradients::compute_gradients_into;
 use crate::utils::float_gradients::scharr_f32;
@@ -89,6 +90,69 @@ pub struct TrackParams {
     pub min_eigen_threshold: f32,
 }
 
+/// Options of a tracking call beyond [`TrackParams`], for
+/// [`TrackerContext::track_with`] and [`TrackerContext::track_fb_with`] and
+/// their [`FloatTrackerContext`] counterparts. The default reproduces
+/// `track` and `track_fb`.
+///
+/// ```
+/// use optical_flow_lk::TrackOptions;
+///
+/// // Check the round trip on the two finest levels only.
+/// const OPTIONS: TrackOptions = TrackOptions::new().with_fb_levels(2);
+/// assert_eq!(OPTIONS.fb_levels, Some(2));
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct TrackOptions {
+    /// Pyramid level the forward pass starts at, 0 being full resolution.
+    /// `None` starts at the coarsest level; levels above it are clamped to
+    /// it. The displacement from `predicted` (or zero) seeds the start level.
+    ///
+    /// Each level above full resolution doubles the motion the iteration can
+    /// recover from its seed, about half a window at level 0. Starting lower
+    /// saves the coarse levels' work when a prediction (a gyroscope, a
+    /// constant-velocity model) is already that close, and loses the capture
+    /// range they give otherwise.
+    pub start_level: Option<usize>,
+    /// Pyramid levels the backward pass of `track_fb_with` runs, the finest
+    /// ones: `Some(k)` runs levels `k - 1` down to 0, `None` all of them, as
+    /// `track_fb` does. Must be at least 1; ignored by `track_with`.
+    ///
+    /// The backward pass tracks the forward results back into the previous
+    /// frame, seeded at the original points, which a consistent round trip
+    /// returns to. A correct forward match therefore needs no coarse levels
+    /// to come back. Fewer levels make the check cheaper and slightly more
+    /// permissive: a wrong match that the coarse levels would have carried
+    /// further away can stay within the threshold. On the bundled example
+    /// pair, see the changelog of 0.6.0 for how many points change status.
+    pub fb_levels: Option<usize>,
+}
+
+impl TrackOptions {
+    /// The default options: all levels in both passes.
+    pub const fn new() -> Self {
+        TrackOptions {
+            start_level: None,
+            fb_levels: None,
+        }
+    }
+
+    /// Starts the forward pass at pyramid level `level`, see
+    /// [`start_level`](Self::start_level).
+    pub const fn with_start_level(mut self, level: usize) -> Self {
+        self.start_level = Some(level);
+        self
+    }
+
+    /// Runs the backward pass over the finest `levels` levels, see
+    /// [`fb_levels`](Self::fb_levels).
+    pub const fn with_fb_levels(mut self, levels: usize) -> Self {
+        self.fb_levels = Some(levels);
+        self
+    }
+}
+
 /// Per-point result of [`calc_optical_flow_ex`].
 ///
 /// # Coordinate convention
@@ -146,10 +210,13 @@ pub fn calc_optical_flow_ex(
     let mut out = Vec::new();
     track_into(
         prev_pyramid,
+        &mut Gradients::default(),
         curr_pyramid,
         prev_points,
         predicted,
         params,
+        None,
+        GrayImage::select(params.window_size),
         &mut scratch,
         &mut out,
     );
@@ -160,38 +227,97 @@ pub fn calc_optical_flow_ex(
 /// [`TrackerContext`] (or created transiently by the free functions) so the
 /// steady-state hot path performs no heap allocation.
 #[derive(Default)]
-struct Scratch<G> {
-    prev_patch: Vec<f32>,
-    ix_patch: Vec<f32>,
-    iy_patch: Vec<f32>,
+struct Scratch {
+    /// Patches of the f32 kernels: intensities and both gradients.
+    float_patch: [Vec<f32>; 3],
     displacements: Vec<(f32, f32)>,
-    grad_x: Vec<G>,
-    grad_y: Vec<G>,
 }
 
-impl<G> Scratch<G> {
+impl Scratch {
     fn reserve(&mut self, capacity: &TrackerCapacity) {
-        let patch = capacity.window_size * capacity.window_size;
-        for buffer in [&mut self.prev_patch, &mut self.ix_patch, &mut self.iy_patch] {
-            reserve_total(buffer, patch);
+        let size = capacity.window_size;
+        for buffer in &mut self.float_patch {
+            reserve_total(buffer, size * size);
         }
         reserve_total(&mut self.displacements, capacity.points);
-        let pixels = capacity.width as usize * capacity.height as usize;
-        reserve_total(&mut self.grad_x, pixels);
-        reserve_total(&mut self.grad_y, pixels);
+    }
+}
+
+/// Scharr gradients of the levels of one pyramid, each computed when first
+/// needed and kept until the pyramid changes. The contexts keep one per
+/// pyramid, so every frame's gradients are computed once, however many
+/// passes read them; the free functions use a transient one per call.
+#[derive(Default)]
+struct Gradients<G> {
+    levels: Vec<GradientLevel<G>>,
+}
+
+#[derive(Default)]
+struct GradientLevel<G> {
+    x: Vec<G>,
+    y: Vec<G>,
+    /// Whether `x` and `y` hold the gradients of the pyramid's current level.
+    ready: bool,
+}
+
+impl<G: Copy + Default> Gradients<G> {
+    /// Forgets every level, for a pyramid that was rebuilt.
+    fn invalidate(&mut self) {
+        for level in &mut self.levels {
+            level.ready = false;
+        }
+    }
+
+    /// Allocates the planes of a `width` x `height` pyramid with `levels`
+    /// levels.
+    fn reserve(&mut self, width: u32, height: u32, levels: usize) {
+        for (index, (w, h)) in level_dimensions(width, height, levels).enumerate() {
+            if index == self.levels.len() {
+                self.levels.push(GradientLevel::default());
+            }
+            let pixels = w as usize * h as usize;
+            reserve_total(&mut self.levels[index].x, pixels);
+            reserve_total(&mut self.levels[index].y, pixels);
+        }
+    }
+
+    /// The gradients of `pyramid[level]`, computed now unless they are kept
+    /// from an earlier call.
+    fn level<I: TrackImage<Gradient = G>>(&mut self, pyramid: &[I], level: usize) -> (&[G], &[G]) {
+        if self.levels.len() < pyramid.len() {
+            self.levels
+                .resize_with(pyramid.len(), GradientLevel::default);
+        }
+        let image = &pyramid[level];
+        let slot = &mut self.levels[level];
+        if !slot.ready {
+            let (w, h) = image.dimensions();
+            let pixels = w as usize * h as usize;
+            slot.x.resize(pixels, G::default());
+            slot.y.resize(pixels, G::default());
+            image.gradients_into(&mut slot.x, &mut slot.y);
+            slot.ready = true;
+        }
+        (&slot.x, &slot.y)
     }
 }
 
 /// Core pyramidal Lucas-Kanade loop, writing one [`TrackResult`] per point into
-/// `out`. All temporaries live in `scratch`; given sufficient capacity this is
-/// allocation-free.
+/// `out`. `prev_gradients` caches the gradients of `prev_pyramid`. The pass
+/// runs from `start_level` (`None`: the top of the pyramid) down to full
+/// resolution with `kernel`. All temporaries live in `scratch`; given
+/// sufficient capacity this is allocation-free.
+#[allow(clippy::too_many_arguments)]
 fn track_into<I: TrackImage>(
     prev_pyramid: &[I],
+    prev_gradients: &mut Gradients<I::Gradient>,
     curr_pyramid: &[I],
     prev_points: &[(f32, f32)],
     predicted: Option<&[(f32, f32)]>,
     params: TrackParams,
-    scratch: &mut Scratch<I::Gradient>,
+    start_level: Option<usize>,
+    kernel: I::Kernel,
+    scratch: &mut Scratch,
     out: &mut Vec<TrackResult>,
 ) {
     assert_eq!(prev_pyramid.len(), curr_pyramid.len());
@@ -220,28 +346,14 @@ fn track_into<I: TrackImage>(
         );
     }
 
-    let n_levels = prev_pyramid.len();
+    let top = prev_pyramid.len() - 1;
+    let start = start_level.map_or(top, |level| level.min(top));
     let radius = window_size / 2;
-    let n_pixels = window_size * window_size;
-
-    let Scratch {
-        prev_patch,
-        ix_patch,
-        iy_patch,
-        displacements,
-        grad_x: grad_x_buf,
-        grad_y: grad_y_buf,
-    } = scratch;
-
-    // Prepare reusable buffers. resize/clear+extend keep capacity, so none of
-    // this allocates once the buffers are warm.
-    prev_patch.resize(n_pixels, 0.0);
-    ix_patch.resize(n_pixels, 0.0);
-    iy_patch.resize(n_pixels, 0.0);
 
     // Total displacement per point, accumulated coarse-to-fine in level-0 units.
-    // Seeding it from a prediction makes the coarsest level start at the
+    // Seeding it from a prediction makes the start level begin at the
     // predicted position; everything else is identical to the zero-init path.
+    let displacements = &mut scratch.displacements;
     displacements.clear();
     match predicted {
         Some(predicted) => displacements.extend(
@@ -253,12 +365,6 @@ fn track_into<I: TrackImage>(
         None => displacements.resize(prev_points.len(), (0.0, 0.0)),
     }
 
-    // One shared gradient buffer sized to the largest (level-0) image; smaller
-    // levels use a prefix slice.
-    let (w0, h0) = prev_pyramid[0].dimensions();
-    grad_x_buf.resize((w0 * h0) as usize, Default::default());
-    grad_y_buf.resize((w0 * h0) as usize, Default::default());
-
     // Initialize results at the input positions; the loop refines them in place.
     out.clear();
     out.extend(prev_points.iter().map(|&(x, y)| TrackResult {
@@ -267,25 +373,18 @@ fn track_into<I: TrackImage>(
         error: f32::INFINITY,
     }));
 
-    let kernel = Kernel::detect();
-
-    // Process levels from top (coarse) to bottom (fine).
-    for level in (0..n_levels).rev() {
+    // Process levels from the start level (coarse) to the bottom (fine).
+    for level in (0..=start).rev() {
         let prev_img = &prev_pyramid[level];
         let curr_img = &curr_pyramid[level];
         let (lw, lh) = prev_img.dimensions();
-        let level_pixels = (lw * lh) as usize;
-
-        prev_img.gradients_into(
-            &mut grad_x_buf[..level_pixels],
-            &mut grad_y_buf[..level_pixels],
-        );
+        let (grad_x, grad_y) = prev_gradients.level(prev_pyramid, level);
 
         let level = Level::<I> {
             prev: prev_img.pixels(),
             curr: curr_img.pixels(),
-            grad_x: &grad_x_buf[..level_pixels],
-            grad_y: &grad_y_buf[..level_pixels],
+            grad_x,
+            grad_y,
             width: lw as usize,
             height: lh as usize,
             scale: 2f32.powi(level as i32),
@@ -296,20 +395,12 @@ fn track_into<I: TrackImage>(
             min_eigen_threshold,
         };
 
-        kernel.track_level(
-            &level,
-            prev_points,
-            displacements,
-            prev_patch,
-            ix_patch,
-            iy_patch,
-            out,
-        );
+        I::track_level(kernel, &level, prev_points, scratch, out);
     }
 
     // Fold accumulated displacements into the reported positions.
     for (idx, (x, y)) in prev_points.iter().enumerate() {
-        let (dx, dy) = displacements[idx];
+        let (dx, dy) = scratch.displacements[idx];
         out[idx].pos = (x + dx, y + dy);
     }
 }
@@ -330,10 +421,11 @@ struct Level<'a, I: TrackImage> {
     min_eigen_threshold: f32,
 }
 
-/// Instruction set the per-level loop is compiled for. The portable body is
-/// written so the compiler can vectorize it for whatever the target enables
-/// (SSE2 baseline, NEON, `simd128`); on x86 an AVX2 copy is selected at runtime.
-#[derive(Clone, Copy)]
+/// The f32 reference kernel, also the only kernel of the f32 tracker. The
+/// portable body is written so the compiler can vectorize it for whatever the
+/// target enables (SSE2 baseline, NEON, `simd128`); on x86 an AVX2 copy is
+/// selected at runtime.
+#[derive(Clone, Copy, Debug)]
 enum Kernel {
     Portable,
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -349,39 +441,30 @@ impl Kernel {
         Kernel::Portable
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Refines every point's displacement at one level.
     fn track_level<I: TrackImage>(
         self,
         level: &Level<I>,
         prev_points: &[(f32, f32)],
-        displacements: &mut [(f32, f32)],
-        prev_patch: &mut [f32],
-        ix_patch: &mut [f32],
-        iy_patch: &mut [f32],
+        scratch: &mut Scratch,
         out: &mut [TrackResult],
     ) {
+        let n_pixels = level.window_size * level.window_size;
+        let Scratch {
+            float_patch: [prev, ix, iy],
+            displacements,
+            ..
+        } = scratch;
+        for patch in [&mut *prev, &mut *ix, &mut *iy] {
+            patch.resize(n_pixels, 0.0);
+        }
+        let windows = FloatWindows { prev, ix, iy };
         match self {
-            Kernel::Portable => track_level_impl(
-                level,
-                prev_points,
-                displacements,
-                prev_patch,
-                ix_patch,
-                iy_patch,
-                out,
-            ),
+            Kernel::Portable => track_level_impl(level, prev_points, displacements, windows, out),
             #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
             // SAFETY: `detect` only returns `Avx2` after a positive runtime check.
             Kernel::Avx2 => unsafe {
-                track_level_avx2(
-                    level,
-                    prev_points,
-                    displacements,
-                    prev_patch,
-                    ix_patch,
-                    iy_patch,
-                    out,
-                )
+                track_level_avx2(level, prev_points, displacements, windows, out)
             },
         }
     }
@@ -389,41 +472,72 @@ impl Kernel {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
-#[allow(clippy::too_many_arguments)]
-unsafe fn track_level_avx2<I: TrackImage>(
+unsafe fn track_level_avx2<I: TrackImage, W: Windows<I>>(
     level: &Level<I>,
     prev_points: &[(f32, f32)],
     displacements: &mut [(f32, f32)],
-    prev_patch: &mut [f32],
-    ix_patch: &mut [f32],
-    iy_patch: &mut [f32],
+    windows: W,
     out: &mut [TrackResult],
 ) {
-    track_level_impl(
-        level,
-        prev_points,
-        displacements,
-        prev_patch,
-        ix_patch,
-        iy_patch,
-        out,
-    )
+    track_level_impl(level, prev_points, displacements, windows, out)
+}
+
+/// Per-window arithmetic of the Lucas-Kanade loop: the patch of the previous
+/// frame, the residual sums against the next frame and the final error.
+trait Windows<I: TrackImage> {
+    /// Fills the patch of `win` and returns the spatial gradient matrix
+    /// `(gxx, gxy, gyy)`, summed over the window, in (unit / pixel)^2.
+    fn build(&mut self, lv: &Level<I>, win: &Window) -> (f32, f32, f32);
+
+    /// The gradient-weighted residual `(bx, by)` between the patch and the
+    /// next frame sampled at `win`.
+    fn step(&self, lv: &Level<I>, win: &Window) -> (f32, f32);
+
+    /// Mean absolute residual between the patch and the next frame at `win`.
+    fn error(&self, lv: &Level<I>, win: &Window) -> f32;
+}
+
+/// The f32 reference windows.
+struct FloatWindows<'a> {
+    prev: &'a mut [f32],
+    ix: &'a mut [f32],
+    iy: &'a mut [f32],
+}
+
+impl<I: TrackImage> Windows<I> for FloatWindows<'_> {
+    #[inline(always)]
+    fn build(&mut self, lv: &Level<I>, win: &Window) -> (f32, f32, f32) {
+        build_patch(lv, win, self.prev, self.ix, self.iy)
+    }
+
+    #[inline(always)]
+    fn step(&self, lv: &Level<I>, win: &Window) -> (f32, f32) {
+        lk_step(lv, win, self.prev, self.ix, self.iy)
+    }
+
+    #[inline(always)]
+    fn error(&self, lv: &Level<I>, win: &Window) -> f32 {
+        window_error(lv, win, self.prev)
+    }
 }
 
 /// Refines every point's displacement at one pyramid level.
 #[inline(always)]
-#[allow(clippy::too_many_arguments)]
-fn track_level_impl<I: TrackImage>(
+fn track_level_impl<I: TrackImage, W: Windows<I>>(
     lv: &Level<I>,
     prev_points: &[(f32, f32)],
     displacements: &mut [(f32, f32)],
-    prev_patch: &mut [f32],
-    ix_patch: &mut [f32],
-    iy_patch: &mut [f32],
+    mut windows: W,
     out: &mut [TrackResult],
 ) {
     let n_pixels = lv.window_size * lv.window_size;
     let window_limit = lv.window_size as f32;
+    // Mean residual at the final position, infinite when the window left the
+    // frame.
+    let final_error = |windows: &W, cx: f32, cy: f32| {
+        Window::new(cx, cy, lv.radius, lv.width, lv.height)
+            .map_or(f32::INFINITY, |win| windows.error(lv, &win))
+    };
 
     for (idx, &(prev_x, prev_y)) in prev_points.iter().enumerate() {
         // Scale the original point for the current level.
@@ -441,7 +555,7 @@ fn track_level_impl<I: TrackImage>(
         };
 
         // Spatial gradient matrix and cached previous/gradient patches.
-        let (gxx, gxy, gyy) = build_patch(lv, &prev_win, prev_patch, ix_patch, iy_patch);
+        let (gxx, gxy, gyy) = windows.build(lv, &prev_win);
 
         // Reject low-texture windows up front (normalized by window area so
         // the threshold does not depend on `window_size`).
@@ -451,7 +565,7 @@ fn track_level_impl<I: TrackImage>(
                 Spatial::LowTexture { measure_error } => {
                     out[idx].status = TrackStatus::LowTexture;
                     if measure_error && lv.is_finest {
-                        out[idx].error = window_error(lv, x + dx, y + dy, prev_patch);
+                        out[idx].error = final_error(&windows, x + dx, y + dy);
                     }
                     continue;
                 }
@@ -468,7 +582,7 @@ fn track_level_impl<I: TrackImage>(
                 break;
             };
 
-            let (bx, by) = lk_step(lv, &win, prev_patch, ix_patch, iy_patch);
+            let (bx, by) = windows.step(lv, &win);
 
             let ddx = inv_h00 * bx + inv_h01 * by;
             let ddy = inv_h01 * bx + inv_h11 * by;
@@ -519,7 +633,7 @@ fn track_level_impl<I: TrackImage>(
             out[idx].error = if out_of_bounds {
                 f32::INFINITY
             } else {
-                window_error(lv, x + dx, y + dy, prev_patch)
+                final_error(&windows, x + dx, y + dy)
             };
         }
     }
@@ -804,10 +918,9 @@ fn lk_step<I: TrackImage>(
 }
 
 /// Mean absolute photometric residual between the cached previous patch and the
-/// next image sampled around `(cx, cy)`. Returns [`f32::INFINITY`] if the window
-/// is out of bounds.
+/// next image sampled at `win`.
 #[inline(always)]
-fn window_error<I: TrackImage>(lv: &Level<I>, cx: f32, cy: f32, prev_patch: &[f32]) -> f32 {
+fn window_error<I: TrackImage>(lv: &Level<I>, win: &Window, prev_patch: &[f32]) -> f32 {
     #[inline(always)]
     fn lanes<P: Copy + Into<f32>, const L: usize>(
         win: &Window,
@@ -822,9 +935,6 @@ fn window_error<I: TrackImage>(lv: &Level<I>, cx: f32, cy: f32, prev_patch: &[f3
         }
     }
 
-    let Some(win) = Window::new(cx, cy, lv.radius, lv.width, lv.height) else {
-        return f32::INFINITY;
-    };
     let size = lv.window_size;
     let mut acc8 = [0f32; 8];
     let mut acc4 = [0f32; 4];
@@ -835,15 +945,15 @@ fn window_error<I: TrackImage>(lv: &Level<I>, cx: f32, cy: f32, prev_patch: &[f3
         let p = &prev_patch[j * size..][..size];
         let mut i = 0;
         while i + 8 <= size {
-            lanes::<_, 8>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc8);
+            lanes::<_, 8>(win, (&a[i..], &b[i..]), &p[i..], &mut acc8);
             i += 8;
         }
         if i + 4 <= size {
-            lanes::<_, 4>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc4);
+            lanes::<_, 4>(win, (&a[i..], &b[i..]), &p[i..], &mut acc4);
             i += 4;
         }
         while i < size {
-            lanes::<_, 1>(&win, (&a[i..], &b[i..]), &p[i..], &mut acc1);
+            lanes::<_, 1>(win, (&a[i..], &b[i..]), &p[i..], &mut acc1);
             i += 1;
         }
     }
@@ -885,12 +995,16 @@ pub fn calc_optical_flow_fb(
 ) -> Vec<TrackResult> {
     let mut scratch = Scratch::default();
     let mut forward = Vec::new();
+    let kernel = GrayImage::select(params.window_size);
     track_into(
         prev_pyramid,
+        &mut Gradients::default(),
         next_pyramid,
         prev_points,
         predicted,
         params,
+        None,
+        kernel,
         &mut scratch,
         &mut forward,
     );
@@ -903,10 +1017,13 @@ pub fn calc_optical_flow_fb(
     // genuinely wrong forward match still fails to land back within threshold.
     track_into(
         next_pyramid,
+        &mut Gradients::default(),
         prev_pyramid,
         &forward_pos,
         Some(prev_points),
         params,
+        None,
+        kernel,
         &mut scratch,
         &mut backward,
     );
@@ -968,9 +1085,11 @@ enum Spatial {
 
 /// A pyramid level the Lucas-Kanade loop can track on: 8-bit images with
 /// i16 Scharr gradients, or f32 images with f32 gradients.
-trait TrackImage {
+trait TrackImage: Sized {
     type Pixel: Copy + Into<f32>;
     type Gradient: Copy + Into<f32> + Default;
+    /// The window kernels a pass can run with.
+    type Kernel: Copy;
 
     fn dimensions(&self) -> (u32, u32);
 
@@ -982,14 +1101,41 @@ trait TrackImage {
     /// Classifies the spatial gradient matrix `[[gxx, gxy], [gxy, gyy]]`,
     /// summed over `n_pixels` window samples of slopes per pixel.
     fn spatial_inverse(gxx: f32, gxy: f32, gyy: f32, n_pixels: usize, threshold: f32) -> Spatial;
+
+    /// The kernel for windows of `window_size` on this CPU.
+    fn select(window_size: usize) -> Self::Kernel;
+
+    /// Refines every point's displacement at one level with `kernel`.
+    fn track_level(
+        kernel: Self::Kernel,
+        level: &Level<Self>,
+        prev_points: &[(f32, f32)],
+        scratch: &mut Scratch,
+        out: &mut [TrackResult],
+    );
 }
 
 impl TrackImage for GrayImage {
     type Pixel = u8;
     type Gradient = i16;
+    type Kernel = Kernel;
 
     fn dimensions(&self) -> (u32, u32) {
         ImageBuffer::dimensions(self)
+    }
+
+    fn select(_: usize) -> Kernel {
+        Kernel::detect()
+    }
+
+    fn track_level(
+        kernel: Kernel,
+        level: &Level<Self>,
+        prev_points: &[(f32, f32)],
+        scratch: &mut Scratch,
+        out: &mut [TrackResult],
+    ) {
+        kernel.track_level(level, prev_points, scratch, out)
     }
 
     fn pixels(&self) -> &[u8] {
@@ -1031,9 +1177,24 @@ impl TrackImage for GrayImage {
 impl TrackImage for FloatPyramidLevel {
     type Pixel = f32;
     type Gradient = f32;
+    type Kernel = Kernel;
 
     fn dimensions(&self) -> (u32, u32) {
         ImageBuffer::dimensions(self)
+    }
+
+    fn select(_: usize) -> Kernel {
+        Kernel::detect()
+    }
+
+    fn track_level(
+        kernel: Kernel,
+        level: &Level<Self>,
+        prev_points: &[(f32, f32)],
+        scratch: &mut Scratch,
+        out: &mut [TrackResult],
+    ) {
+        kernel.track_level(level, prev_points, scratch, out)
     }
 
     fn pixels(&self) -> &[f32] {
@@ -1097,17 +1258,22 @@ pub struct TrackerCapacity {
     pub points: usize,
 }
 
-/// Pyramids, scratch and result buffers of a tracker context, generic over
-/// the pyramid level type.
+/// Pyramids, their gradients, scratch and result buffers of a tracker
+/// context, generic over the pyramid level type.
 #[derive(Default)]
 struct Tracker<I: TrackImage> {
     prev_pyramid: Vec<I>,
     next_pyramid: Vec<I>,
+    /// Gradients of `prev_pyramid`, which the forward pass tracks from.
+    prev_gradients: Gradients<I::Gradient>,
+    /// Gradients of `next_pyramid`, which the backward pass tracks from and
+    /// which become `prev_gradients` when `advance` reuses the pyramid.
+    next_gradients: Gradients<I::Gradient>,
     /// Level count of `next_pyramid` while it holds the pyramid of the last
     /// next frame, which `advance` can then reuse. `None` before the first
     /// frame and after `reserve` reshaped the base level.
     next_levels: Option<usize>,
-    scratch: Scratch<I::Gradient>,
+    scratch: Scratch,
     results: Vec<TrackResult>,
     forward_pos: Vec<(f32, f32)>,
     backward: Vec<TrackResult>,
@@ -1135,6 +1301,12 @@ where
             // The base level was reshaped and no longer holds the last frame.
             self.next_levels = None;
         }
+        // Levels may have been reshaped, so their gradients are recomputed
+        // when next needed.
+        for gradients in [&mut self.prev_gradients, &mut self.next_gradients] {
+            gradients.reserve(width, height, levels);
+            gradients.invalidate();
+        }
         self.scratch.reserve(capacity);
         reserve_total(&mut self.results, points);
         reserve_total(&mut self.forward_pos, points);
@@ -1143,8 +1315,16 @@ where
 }
 
 impl<I: TrackImage> Tracker<I> {
+    /// Records that both pyramids were just built from a frame pair.
+    fn built_both(&mut self) {
+        self.prev_gradients.invalidate();
+        self.next_gradients.invalidate();
+        self.built_next();
+    }
+
     /// Records that `next_pyramid` was just built from a frame.
     fn built_next(&mut self) {
+        self.next_gradients.invalidate();
         self.next_levels = Some(self.next_pyramid.len());
     }
 
@@ -1167,10 +1347,18 @@ impl<I: TrackImage> Tracker<I> {
                 if built == self.next_pyramid.len()
                     && built == pyramid_level_count(dimensions.0, dimensions.1, levels) =>
             {
+                // The last frame's gradients move along with its pyramid.
                 std::mem::swap(&mut self.prev_pyramid, &mut self.next_pyramid);
+                std::mem::swap(&mut self.prev_gradients, &mut self.next_gradients);
             }
-            Some(_) => rebuild(&self.next_pyramid[0], &mut self.prev_pyramid),
-            None => build(&mut self.prev_pyramid),
+            Some(_) => {
+                rebuild(&self.next_pyramid[0], &mut self.prev_pyramid);
+                self.prev_gradients.invalidate();
+            }
+            None => {
+                build(&mut self.prev_pyramid);
+                self.prev_gradients.invalidate();
+            }
         }
         build(&mut self.next_pyramid);
         self.built_next();
@@ -1181,13 +1369,17 @@ impl<I: TrackImage> Tracker<I> {
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
         params: TrackParams,
+        options: TrackOptions,
     ) -> &[TrackResult] {
         track_into(
             &self.prev_pyramid,
+            &mut self.prev_gradients,
             &self.next_pyramid,
             prev_points,
             predicted,
             params,
+            options.start_level,
+            I::select(params.window_size),
             &mut self.scratch,
             &mut self.results,
         );
@@ -1200,13 +1392,22 @@ impl<I: TrackImage> Tracker<I> {
         predicted: Option<&[(f32, f32)]>,
         params: TrackParams,
         fb_threshold: f32,
+        options: TrackOptions,
     ) -> &[TrackResult] {
+        let backward_start = options.fb_levels.map(|levels| {
+            assert!(levels >= 1, "fb_levels must be at least 1");
+            levels - 1
+        });
+        let kernel = I::select(params.window_size);
         track_into(
             &self.prev_pyramid,
+            &mut self.prev_gradients,
             &self.next_pyramid,
             prev_points,
             predicted,
             params,
+            options.start_level,
+            kernel,
             &mut self.scratch,
             &mut self.results,
         );
@@ -1217,10 +1418,13 @@ impl<I: TrackImage> Tracker<I> {
         // Seed the backward pass at the original points (see calc_optical_flow_fb).
         track_into(
             &self.next_pyramid,
+            &mut self.next_gradients,
             &self.prev_pyramid,
             &self.forward_pos,
             Some(prev_points),
             params,
+            backward_start,
+            kernel,
             &mut self.scratch,
             &mut self.backward,
         );
@@ -1285,7 +1489,7 @@ impl TrackerContext {
         );
         build_pyramid_into(prev, levels, &mut self.tracker.prev_pyramid);
         build_pyramid_into(next, levels, &mut self.tracker.next_pyramid);
-        self.tracker.built_next();
+        self.tracker.built_both();
     }
 
     /// Moves to the next frame pair: the pyramid of the last next frame
@@ -1352,13 +1556,29 @@ impl TrackerContext {
     /// Tracks `prev_points` using the prepared pyramids, returning the results
     /// held inside the context. See [`calc_optical_flow_ex`] for the argument
     /// semantics. Allocation-free in steady state.
+    ///
+    /// The Scharr gradients of each pyramid level are computed once per frame
+    /// and kept with the pyramid, so `track` after `track_fb` on the same
+    /// frames, or the next frame's forward pass after `advance`, reuse them.
     pub fn track(
         &mut self,
         prev_points: &[(f32, f32)],
         predicted: Option<&[(f32, f32)]>,
         params: TrackParams,
     ) -> &[TrackResult] {
-        self.tracker.track(prev_points, predicted, params)
+        self.track_with(prev_points, predicted, params, TrackOptions::new())
+    }
+
+    /// [`track`](Self::track) with [`TrackOptions`]: the level the pass starts
+    /// at.
+    pub fn track_with(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        params: TrackParams,
+        options: TrackOptions,
+    ) -> &[TrackResult] {
+        self.tracker.track(prev_points, predicted, params, options)
     }
 
     /// Forward-backward consistent tracking using the prepared pyramids. See
@@ -1371,8 +1591,46 @@ impl TrackerContext {
         params: TrackParams,
         fb_threshold: f32,
     ) -> &[TrackResult] {
+        self.track_fb_with(
+            prev_points,
+            predicted,
+            params,
+            fb_threshold,
+            TrackOptions::new(),
+        )
+    }
+
+    /// [`track_fb`](Self::track_fb) with [`TrackOptions`]: the level the
+    /// forward pass starts at and the levels of the backward pass.
+    ///
+    /// ```
+    /// # use image::GrayImage;
+    /// # use optical_flow_lk::{DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackOptions, TrackParams, TrackerContext};
+    /// # let (frame, points) = (GrayImage::new(64, 48), vec![(32.0, 24.0)]);
+    /// # let params = TrackParams {
+    /// #     window_size: 13,
+    /// #     max_iterations: 30,
+    /// #     min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+    /// # };
+    /// let mut ctx = TrackerContext::new();
+    /// ctx.advance(&frame, 4);
+    /// // Round trip over the finest level only.
+    /// let options = TrackOptions::new().with_fb_levels(1);
+    /// let results = ctx.track_fb_with(&points, None, params, DEFAULT_FB_THRESHOLD, options);
+    /// ```
+    ///
+    /// # Panics
+    /// As [`track`](Self::track), and if `options.fb_levels` is `Some(0)`.
+    pub fn track_fb_with(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        params: TrackParams,
+        fb_threshold: f32,
+        options: TrackOptions,
+    ) -> &[TrackResult] {
         self.tracker
-            .track_fb(prev_points, predicted, params, fb_threshold)
+            .track_fb(prev_points, predicted, params, fb_threshold, options)
     }
 }
 
@@ -1440,7 +1698,7 @@ impl FloatTrackerContext {
         );
         build_float_pyramid_into(prev, levels, &mut self.tracker.prev_pyramid);
         build_float_pyramid_into(next, levels, &mut self.tracker.next_pyramid);
-        self.tracker.built_next();
+        self.tracker.built_both();
     }
 
     /// Moves to the next frame pair: the pyramid of the last next frame
@@ -1490,7 +1748,19 @@ impl FloatTrackerContext {
         predicted: Option<&[(f32, f32)]>,
         params: TrackParams,
     ) -> &[TrackResult] {
-        self.tracker.track(prev_points, predicted, params)
+        self.track_with(prev_points, predicted, params, TrackOptions::new())
+    }
+
+    /// [`track`](Self::track) with [`TrackOptions`]: the level the pass starts
+    /// at.
+    pub fn track_with(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        params: TrackParams,
+        options: TrackOptions,
+    ) -> &[TrackResult] {
+        self.tracker.track(prev_points, predicted, params, options)
     }
 
     /// Forward-backward consistent tracking, as [`calc_optical_flow_fb`]
@@ -1505,8 +1775,30 @@ impl FloatTrackerContext {
         params: TrackParams,
         fb_threshold: f32,
     ) -> &[TrackResult] {
+        self.track_fb_with(
+            prev_points,
+            predicted,
+            params,
+            fb_threshold,
+            TrackOptions::new(),
+        )
+    }
+
+    /// [`track_fb`](Self::track_fb) with [`TrackOptions`]: the level the
+    /// forward pass starts at and the levels of the backward pass.
+    ///
+    /// # Panics
+    /// As [`track`](Self::track), and if `options.fb_levels` is `Some(0)`.
+    pub fn track_fb_with(
+        &mut self,
+        prev_points: &[(f32, f32)],
+        predicted: Option<&[(f32, f32)]>,
+        params: TrackParams,
+        fb_threshold: f32,
+        options: TrackOptions,
+    ) -> &[TrackResult] {
         self.tracker
-            .track_fb(prev_points, predicted, params, fb_threshold)
+            .track_fb(prev_points, predicted, params, fb_threshold, options)
     }
 }
 
@@ -1586,7 +1878,7 @@ mod tests {
             }
             // The next image is the previous image, so the residual at the same
             // position is zero and a step away from it is not.
-            assert!(window_error(&lv, cx, cy, &patch) < 1e-4);
+            assert!(window_error(&lv, &win, &patch) < 1e-4);
             let (bx, by) = lk_step(&lv, &win, &patch, &ix, &iy);
             assert!(
                 bx.abs() < 1e-2 && by.abs() < 1e-2,

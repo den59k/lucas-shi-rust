@@ -3,8 +3,8 @@
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, Grid, TrackParams, TrackResult,
-    TrackStatus, TrackerCapacity, TrackerContext, build_pyramid, calc_optical_flow_ex,
+    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, Grid, TrackOptions, TrackParams,
+    TrackResult, TrackStatus, TrackerCapacity, TrackerContext, build_pyramid, calc_optical_flow_ex,
     calc_optical_flow_fb, good_features_to_track_grid,
 };
 
@@ -510,4 +510,189 @@ fn larger_next_pyramid_panics_instead_of_misreading_it() {
     let prev = build_pyramid(&textured(64, 48), 2);
     let next = build_pyramid(&textured(80, 48), 2);
     calc_optical_flow_ex(&prev, &next, &[(30.0, 20.0)], None, PARAMS);
+}
+
+/// A frame sequence with motion between every pair and points that reach the
+/// borders.
+fn sequence() -> (Vec<GrayImage>, Vec<(f32, f32)>) {
+    let base = textured(320, 240);
+    let first = shift(&base, 2.5, -1.25);
+    let frames = vec![
+        base.clone(),
+        first.clone(),
+        rotate(&first, 0.02, 150.0, 110.0),
+        shift(&base, -4.0, 3.5),
+        base,
+    ];
+    let points = (0..60)
+        .map(|i| (6.0 + (i % 10) as f32 * 34.0, 5.0 + (i / 10) as f32 * 45.0))
+        .collect();
+    (frames, points)
+}
+
+#[test]
+fn cached_gradients_give_the_results_of_recomputed_ones() {
+    // A context computes each frame's gradients once and keeps them across
+    // passes and frames; the free functions and a fresh context compute them
+    // again. Option sets alternate so that a frame becomes the previous frame
+    // with only some of its levels computed (the backward pass over the
+    // finest level computes only level 0).
+    let (frames, points) = sequence();
+    let option_sets = [
+        TrackOptions::new(),
+        TrackOptions::new().with_fb_levels(1),
+        TrackOptions::new().with_start_level(1),
+        TrackOptions::new().with_fb_levels(2),
+    ];
+    let mut ctx = TrackerContext::new();
+    ctx.advance(&frames[0], 4);
+    for (step, pair) in frames.windows(2).enumerate() {
+        ctx.advance(&pair[1], 4);
+        let options = option_sets[step % option_sets.len()];
+        let mut fresh = TrackerContext::new();
+        fresh.prepare(&pair[0], &pair[1], 4);
+        for _ in 0..2 {
+            let cached = ctx
+                .track_fb_with(&points, None, PARAMS, DEFAULT_FB_THRESHOLD, options)
+                .to_vec();
+            let recomputed =
+                fresh.track_fb_with(&points, None, PARAMS, DEFAULT_FB_THRESHOLD, options);
+            assert_eq!(bits(&cached), bits(recomputed), "step {step}, {options:?}");
+            let cached = ctx.track_with(&points, None, PARAMS, options).to_vec();
+            let recomputed = fresh.track_with(&points, None, PARAMS, options);
+            assert_eq!(bits(&cached), bits(recomputed), "step {step}, {options:?}");
+        }
+        // The free functions recompute every gradient per call.
+        let free = calc_optical_flow_fb(
+            ctx.prev_pyramid(),
+            ctx.next_pyramid(),
+            &points,
+            None,
+            PARAMS,
+            DEFAULT_FB_THRESHOLD,
+        );
+        let cached = ctx.track_fb(&points, None, PARAMS, DEFAULT_FB_THRESHOLD);
+        assert_eq!(bits(cached), bits(&free), "step {step}");
+        let free = calc_optical_flow_ex(
+            ctx.prev_pyramid(),
+            ctx.next_pyramid(),
+            &points,
+            None,
+            PARAMS,
+        );
+        assert_eq!(
+            bits(ctx.track(&points, None, PARAMS)),
+            bits(&free),
+            "step {step}"
+        );
+    }
+}
+
+#[test]
+fn start_level_skips_the_coarse_levels() {
+    let prev = textured(320, 240);
+    let (sx, sy) = (26.0f32, 23.0f32);
+    let next = shift(&prev, sx, sy);
+    let points = vec![(160.0f32, 120.0), (110.0, 95.0), (205.0, 150.0)];
+    let exact: Vec<(f32, f32)> = points.iter().map(|&(x, y)| (x + sx, y + sy)).collect();
+    // A prediction off by about a pixel, as from a motion model.
+    let predicted: Vec<(f32, f32)> = exact.iter().map(|&(x, y)| (x - 0.8, y + 0.6)).collect();
+    let mut ctx = TrackerContext::new();
+    ctx.prepare(&prev, &next, 4);
+
+    // The top level, or any level above it, is the default.
+    let default = bits(ctx.track(&points, Some(&predicted), PARAMS));
+    for level in [3, 4, 100] {
+        let options = TrackOptions::new().with_start_level(level);
+        let results = ctx.track_with(&points, Some(&predicted), PARAMS, options);
+        assert_eq!(bits(results), default, "start level {level}");
+    }
+
+    // From level 0 the prediction alone carries the motion.
+    for level in [0, 1] {
+        let options = TrackOptions::new().with_start_level(level);
+        let results = ctx.track_with(&points, Some(&predicted), PARAMS, options);
+        for (r, &e) in results.iter().zip(&exact) {
+            assert_eq!(r.status, TrackStatus::Tracked, "start level {level}");
+            assert!(
+                dist(r.pos, e) < 0.2,
+                "start level {level}: {:?} vs {e:?}",
+                r.pos
+            );
+        }
+    }
+    // Without a prediction, level 0 cannot recover 35 px of motion.
+    let options = TrackOptions::new().with_start_level(0);
+    let results = ctx.track_with(&points, None, PARAMS, options);
+    assert!(
+        results
+            .iter()
+            .zip(&exact)
+            .all(|(r, &e)| r.status != TrackStatus::Tracked || dist(r.pos, e) > 1.0)
+    );
+}
+
+#[test]
+fn fb_levels_limit_the_backward_pass() {
+    let (frames, points) = sequence();
+    let mut ctx = TrackerContext::new();
+    ctx.prepare(&frames[0], &frames[1], 4);
+    let all = bits(ctx.track_fb(&points, None, PARAMS, DEFAULT_FB_THRESHOLD));
+    // All levels, or more, are the default.
+    for levels in [4, 5, 100] {
+        let options = TrackOptions::new().with_fb_levels(levels);
+        let results = ctx.track_fb_with(&points, None, PARAMS, DEFAULT_FB_THRESHOLD, options);
+        assert_eq!(bits(results), all, "fb_levels {levels}");
+    }
+    // The forward pass is the same with any backward pass: only points the
+    // forward pass tracks can change status, and only to or from
+    // `FbInconsistent`.
+    let forward = ctx.track(&points, None, PARAMS).to_vec();
+    for levels in [1, 2, 3] {
+        let options = TrackOptions::new().with_fb_levels(levels);
+        let results = ctx.track_fb_with(&points, None, PARAMS, DEFAULT_FB_THRESHOLD, options);
+        let mut tracked = 0;
+        for (r, f) in results.iter().zip(&forward) {
+            assert_eq!(r.pos, f.pos);
+            assert_eq!(r.error.to_bits(), f.error.to_bits());
+            if f.status == TrackStatus::Tracked {
+                assert!(matches!(
+                    r.status,
+                    TrackStatus::Tracked | TrackStatus::FbInconsistent
+                ));
+                tracked += (r.status == TrackStatus::Tracked) as usize;
+            } else {
+                assert_eq!(r.status, f.status);
+            }
+        }
+        assert!(
+            tracked > points.len() / 2,
+            "fb_levels {levels}: {tracked} tracked"
+        );
+    }
+}
+
+#[test]
+fn fb_check_over_the_finest_level_still_catches_occlusion() {
+    let prev = textured(320, 240);
+    let (sx, sy) = (3.0f32, 2.0f32);
+    let mut next = shift(&prev, sx, sy);
+    occlude_textured(&mut next, &prev, 200 + sx as i32, 150 + sy as i32, 22);
+    let mut ctx = TrackerContext::new();
+    ctx.prepare(&prev, &next, 4);
+    let options = TrackOptions::new().with_fb_levels(1);
+    let points = [(80.0f32, 70.0f32), (200.0, 150.0)];
+    let results = ctx.track_fb_with(&points, None, PARAMS, DEFAULT_FB_THRESHOLD, options);
+    assert_eq!(results[0].status, TrackStatus::Tracked);
+    assert_ne!(results[1].status, TrackStatus::Tracked);
+}
+
+#[test]
+#[should_panic(expected = "fb_levels must be at least 1")]
+fn zero_fb_levels_panic() {
+    let image = textured(64, 48);
+    let mut ctx = TrackerContext::new();
+    ctx.prepare(&image, &image, 2);
+    let options = TrackOptions::new().with_fb_levels(0);
+    ctx.track_fb_with(&[(30.0, 20.0)], None, PARAMS, DEFAULT_FB_THRESHOLD, options);
 }

@@ -13,8 +13,9 @@
 //!
 //! `regime` is the per-frame step of a real-time front-end: `advance` with the
 //! new frame, then `track` (`fb_off`) or `track_fb` (`fb_all`) of the
-//! strongest corners of the first frame. Portrait 360x640 and 640x480 frames,
-//! 4 levels, windows 13 and 21, 44 and 150 points; ids are
+//! strongest corners of the first frame, or `track_fb_with` a backward pass
+//! over the finest 1 or 2 levels (`fb_1`, `fb_2`). Portrait 360x640 and
+//! 640x480 frames, 4 levels, windows 13 and 21, 44 and 150 points; ids are
 //! `regime/<size>/w<window>/p<points>/<fb>`.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -23,8 +24,8 @@ use std::time::Duration;
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackParams, TrackerContext,
-    build_pyramid, calc_optical_flow_ex, good_features_to_track,
+    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, TrackOptions, TrackParams,
+    TrackerContext, build_pyramid, calc_optical_flow_ex, good_features_to_track,
 };
 
 const W: u32 = 640;
@@ -186,13 +187,16 @@ fn bench_frame_step(c: &mut Criterion) {
 enum Fb {
     Off,
     All,
+    /// The backward pass over the finest levels only.
+    Levels(usize),
 }
 
 impl Fb {
-    fn label(self) -> &'static str {
+    fn label(self) -> String {
         match self {
-            Fb::Off => "fb_off",
-            Fb::All => "fb_all",
+            Fb::Off => "fb_off".into(),
+            Fb::All => "fb_all".into(),
+            Fb::Levels(levels) => format!("fb_{levels}"),
         }
     }
 }
@@ -214,7 +218,7 @@ fn bench_regime(c: &mut Criterion) {
                     window_size: window,
                     ..PARAMS
                 };
-                for fb in [Fb::Off, Fb::All] {
+                for fb in [Fb::Off, Fb::All, Fb::Levels(1), Fb::Levels(2)] {
                     let mut ctx = TrackerContext::new();
                     ctx.advance(&frames[0], LEVELS);
                     let mut index = 0;
@@ -228,6 +232,13 @@ fn bench_regime(c: &mut Criterion) {
                                 Fb::All => {
                                     ctx.track_fb(&points, None, params, DEFAULT_FB_THRESHOLD)
                                 }
+                                Fb::Levels(levels) => ctx.track_fb_with(
+                                    &points,
+                                    None,
+                                    params,
+                                    DEFAULT_FB_THRESHOLD,
+                                    TrackOptions::new().with_fb_levels(levels),
+                                ),
                             });
                         });
                     });

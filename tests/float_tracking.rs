@@ -4,7 +4,7 @@
 use image::GrayImage;
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, FloatImageView, FloatTrackerContext,
-    TrackParams, TrackResult, TrackStatus, TrackerContext,
+    TrackOptions, TrackParams, TrackResult, TrackStatus, TrackerContext,
 };
 
 const WIN: usize = 21;
@@ -532,6 +532,69 @@ fn advance_matches_prepare_on_a_frame_sequence() {
     reference.prepare(view(&small, 40, 30), view(&small, 40, 30), 2);
     assert_eq!(advanced.prev_pyramid(), reference.prev_pyramid());
     assert_eq!(advanced.next_pyramid(), reference.next_pyramid());
+}
+
+#[test]
+fn cached_gradients_and_options_match_a_fresh_context() {
+    // The context keeps each frame's gradients across passes and frames; a
+    // fresh context computes them again. The options alternate so that a
+    // frame becomes the previous frame with only some levels computed.
+    let (w, h) = SIZE;
+    let base = texture(w, h, 12);
+    let frames: Vec<Vec<f32>> = [(0.0, 0.0), (1.6, -0.9), (3.1, 0.4), (-2.2, 1.5)]
+        .into_iter()
+        .map(|motion| {
+            warp(&base, w, h, motion, 0.0)
+                .iter()
+                .map(|v| 21.0 + v * 0.01)
+                .collect()
+        })
+        .collect();
+    let params = TrackParams {
+        window_size: 15,
+        max_iterations: 20,
+        min_eigen_threshold: 1e-6,
+    };
+    let bits = |results: &[TrackResult]| -> Vec<(u32, u32, TrackStatus, u32)> {
+        results
+            .iter()
+            .map(|r| {
+                (
+                    r.pos.0.to_bits(),
+                    r.pos.1.to_bits(),
+                    r.status,
+                    r.error.to_bits(),
+                )
+            })
+            .collect()
+    };
+    let points = lattice(w, h, 6.0, 40);
+    let option_sets = [
+        TrackOptions::new().with_fb_levels(1),
+        TrackOptions::new().with_start_level(1),
+        TrackOptions::new(),
+    ];
+    let mut ctx = FloatTrackerContext::new();
+    ctx.advance(view(&frames[0], w, h), 3);
+    for (step, pair) in frames.windows(2).enumerate() {
+        ctx.advance(view(&pair[1], w, h), 3);
+        let mut fresh = FloatTrackerContext::new();
+        fresh.prepare(view(&pair[0], w, h), view(&pair[1], w, h), 3);
+        let options = option_sets[step % option_sets.len()];
+        for _ in 0..2 {
+            let cached = ctx
+                .track_fb_with(&points, None, params, DEFAULT_FB_THRESHOLD, options)
+                .to_vec();
+            let recomputed =
+                fresh.track_fb_with(&points, None, params, DEFAULT_FB_THRESHOLD, options);
+            assert_eq!(bits(&cached), bits(recomputed), "step {step}");
+            let cached = ctx.track_with(&points, None, params, options).to_vec();
+            assert_eq!(
+                bits(&cached),
+                bits(fresh.track_with(&points, None, params, options))
+            );
+        }
+    }
 }
 
 #[test]

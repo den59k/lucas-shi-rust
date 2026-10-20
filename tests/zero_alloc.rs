@@ -11,8 +11,8 @@ use std::cell::Cell;
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, DetectorCapacity, DetectorContext,
-    FloatDetectorContext, FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackParams,
-    TrackerCapacity, TrackerContext,
+    FloatDetectorContext, FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackOptions,
+    TrackParams, TrackerCapacity, TrackerContext,
 };
 
 struct CountingAllocator;
@@ -389,6 +389,56 @@ const ADVANCE_PARAMS: TrackParams = TrackParams {
     min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
 };
 
+/// Option sets every per-frame call cycles through: backward passes over
+/// fewer levels (so that frames become previous frames with only some
+/// gradient levels computed) and a lower start level.
+const OPTION_SETS: [TrackOptions; 3] = [
+    TrackOptions::new(),
+    TrackOptions::new().with_fb_levels(1),
+    TrackOptions::new().with_start_level(1).with_fb_levels(2),
+];
+
+/// One frame step of a real-time front-end: `advance`, `track_fb_with` and a
+/// `track_with` that reuses the cached gradients. Returns the result count.
+fn frame_step(
+    ctx: &mut TrackerContext,
+    frame: &GrayImage,
+    points: &[(f32, f32)],
+    options: TrackOptions,
+) -> usize {
+    ctx.advance(frame, 4);
+    let n = ctx
+        .track_fb_with(points, None, ADVANCE_PARAMS, DEFAULT_FB_THRESHOLD, options)
+        .len();
+    n + ctx.track_with(points, None, ADVANCE_PARAMS, options).len()
+}
+
+#[test]
+fn steady_state_options_are_allocation_free() {
+    let frames = [25, 26, 27].map(|seed| textured(640, 480, seed));
+    let points = lattice(200);
+    let mut ctx = TrackerContext::new();
+    // Warm-up: every option set once.
+    for (frame, options) in frames.iter().cycle().zip(OPTION_SETS) {
+        frame_step(&mut ctx, frame, &points, options);
+    }
+    let (allocs, tracked) = allocations(|| {
+        let steps = frames
+            .iter()
+            .cycle()
+            .zip(OPTION_SETS.iter().cycle())
+            .take(10);
+        steps
+            .map(|(frame, &options)| frame_step(&mut ctx, frame, &points, options))
+            .sum::<usize>()
+    });
+    assert_eq!(tracked, 10 * 2 * points.len());
+    assert_eq!(
+        allocs, 0,
+        "steady-state option sets allocated {allocs} times"
+    );
+}
+
 #[test]
 fn steady_state_advance_is_allocation_free() {
     let frames = [16, 17, 18].map(|seed| textured(640, 480, seed));
@@ -429,16 +479,14 @@ fn reserved_advance_does_not_allocate_from_the_first_frame() {
     };
     let mut ctx = TrackerContext::with_capacity(capacity);
     let (allocs, tracked) = allocations(|| {
-        let mut tracked = 0;
-        for frame in frames.iter().cycle().take(5) {
-            ctx.advance(frame, 4);
-            tracked += ctx
-                .track_fb(&points, None, ADVANCE_PARAMS, DEFAULT_FB_THRESHOLD)
-                .len();
-        }
-        tracked
+        // Every option set from the first frame on.
+        let steps = frames.iter().cycle().zip(OPTION_SETS.iter().cycle());
+        steps
+            .take(5)
+            .map(|(frame, &options)| frame_step(&mut ctx, frame, &points, options))
+            .sum::<usize>()
     });
-    assert_eq!(tracked, 5 * points.len());
+    assert_eq!(tracked, 5 * 2 * points.len());
     assert_eq!(allocs, 0, "reserved advance allocated {allocs} times");
 
     let celsius: Vec<Vec<f32>> = [22, 23, 24]
@@ -454,10 +502,15 @@ fn reserved_advance_does_not_allocate_from_the_first_frame() {
     let mut ctx = FloatTrackerContext::with_capacity(capacity);
     let (allocs, tracked) = allocations(|| {
         let mut tracked = 0;
-        for frame in celsius.iter().cycle().take(5) {
+        for (frame, &options) in celsius
+            .iter()
+            .cycle()
+            .zip(OPTION_SETS.iter().cycle())
+            .take(5)
+        {
             ctx.advance(FloatImageView::new(frame, 640, 480).unwrap(), 4);
             tracked += ctx
-                .track_fb(
+                .track_fb_with(
                     &points,
                     None,
                     TrackParams {
@@ -465,6 +518,7 @@ fn reserved_advance_does_not_allocate_from_the_first_frame() {
                         ..ADVANCE_PARAMS
                     },
                     DEFAULT_FB_THRESHOLD,
+                    options,
                 )
                 .len();
         }

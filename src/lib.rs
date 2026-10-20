@@ -23,7 +23,7 @@ pub use float_features::{FloatDetectorContext, ScoreThreshold};
 pub use float_image::{FloatImageError, FloatImageView};
 pub use lk::{
     CONVERGENCE_EPSILON, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, FloatPyramidLevel,
-    FloatTrackerContext, TrackParams, TrackResult, TrackStatus, TrackerCapacity, TrackerContext,
-    calc_optical_flow_ex, calc_optical_flow_fb,
+    FloatTrackerContext, TrackOptions, TrackParams, TrackResult, TrackStatus, TrackerCapacity,
+    TrackerContext, calc_optical_flow_ex, calc_optical_flow_fb,
 };
 pub use pyramid::{build_pyramid, build_pyramid_into};

@@ -234,7 +234,11 @@ fn ensure_level<P>(
 
 /// Dimensions of the levels [`build_pyramid_into`] produces for a `width` x
 /// `height` image and `levels` requested levels.
-fn level_dimensions(width: u32, height: u32, levels: usize) -> impl Iterator<Item = (u32, u32)> {
+pub(crate) fn level_dimensions(
+    width: u32,
+    height: u32,
+    levels: usize,
+) -> impl Iterator<Item = (u32, u32)> {
     std::iter::successors(Some((width, height)), |&(w, h)| {
         (w >= 2 && h >= 2).then_some((w / 2, h / 2))
     })

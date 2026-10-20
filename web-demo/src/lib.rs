@@ -4,8 +4,8 @@
 
 use image::{imageops, GrayImage, ImageBuffer, Luma};
 use optical_flow_lk::{
-    good_features_to_track, DetectorContext, Grid, TrackParams, TrackResult, TrackStatus,
-    TrackerContext, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD,
+    good_features_to_track, DetectorContext, Grid, TrackOptions, TrackParams, TrackResult,
+    TrackStatus, TrackerContext, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD,
 };
 use wasm_bindgen::prelude::*;
 
@@ -325,7 +325,7 @@ impl Bench {
 
     /// Whether `fb_levels` other than "all" are supported by the linked crate.
     pub fn supports_fb_levels() -> bool {
-        false
+        true
     }
 
     /// Selects the case: the `points` strongest corners, the window size,
@@ -384,11 +384,20 @@ impl Bench {
     }
 
     fn track(&mut self, fb_levels: i32) -> &[TrackResult] {
+        let options = match fb_levels {
+            0 => TrackOptions::new(),
+            levels => TrackOptions::new().with_fb_levels(levels.max(1) as usize),
+        };
         if fb_levels < 0 {
             self.ctx.track(&self.points, None, self.params)
         } else {
-            self.ctx
-                .track_fb(&self.points, None, self.params, DEFAULT_FB_THRESHOLD)
+            self.ctx.track_fb_with(
+                &self.points,
+                None,
+                self.params,
+                DEFAULT_FB_THRESHOLD,
+                options,
+            )
         }
     }
 }
