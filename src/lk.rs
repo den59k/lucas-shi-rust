@@ -9,6 +9,8 @@ use crate::pyramid::{
 use crate::utils::fast_gradients::compute_gradients_into;
 use crate::utils::float_gradients::scharr_f32;
 
+mod fixed;
+
 /// One level of an f32 image pyramid, as built by [`FloatTrackerContext`].
 pub type FloatPyramidLevel = ImageBuffer<Luma<f32>, Vec<f32>>;
 
@@ -90,6 +92,37 @@ pub struct TrackParams {
     pub min_eigen_threshold: f32,
 }
 
+/// Arithmetic of the 8-bit tracker's window kernels, see
+/// [`TrackOptions::kernel`].
+///
+/// The fixed-point kernels follow the scheme of OpenCV's
+/// `calcOpticalFlowPyrLK`: window samples are bilinear interpolations with
+/// 14-bit integer weights, kept as 16-bit integers with 5 fractional bits for
+/// intensities and 6 for gradients, and every window sum is an exact integer
+/// accumulated from 16-bit products. The integers are the same on every
+/// instruction set, so results are bit for bit identical on x86 (SSE2,
+/// AVX2), wasm32 (`simd128`) and the scalar fallback. Against the f32
+/// reference, tracked positions typically differ by a few ten-thousandths of
+/// a pixel; see the changelog of 0.6.0 for measurements.
+///
+/// The f32 tracker ([`FloatTrackerContext`]) always uses its f32 kernels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TrackKernel {
+    /// Fixed point where the target has SIMD kernels for it: x86 and x86-64
+    /// with SSE2 (AVX2 when the CPU has it) and wasm32 built with `simd128`.
+    /// The f32 reference elsewhere, including aarch64, which has no
+    /// fixed-point SIMD kernel yet.
+    #[default]
+    Auto,
+    /// Fixed point on every target, with a scalar kernel where there is no
+    /// SIMD one. Gives the same results as `Auto` on SIMD targets.
+    FixedPoint,
+    /// The f32 reference kernel, the arithmetic of 0.5 and earlier releases.
+    /// Windows wider than 127 px always use it.
+    Reference,
+}
+
 /// Options of a tracking call beyond [`TrackParams`], for
 /// [`TrackerContext::track_with`] and [`TrackerContext::track_fb_with`] and
 /// their [`FloatTrackerContext`] counterparts. The default reproduces
@@ -127,14 +160,17 @@ pub struct TrackOptions {
     /// further away can stay within the threshold. On the bundled example
     /// pair, see the changelog of 0.6.0 for how many points change status.
     pub fb_levels: Option<usize>,
+    /// Arithmetic of the 8-bit tracker. Ignored by [`FloatTrackerContext`].
+    pub kernel: TrackKernel,
 }
 
 impl TrackOptions {
-    /// The default options: all levels in both passes.
+    /// The default options: all levels in both passes, [`TrackKernel::Auto`].
     pub const fn new() -> Self {
         TrackOptions {
             start_level: None,
             fb_levels: None,
+            kernel: TrackKernel::Auto,
         }
     }
 
@@ -149,6 +185,12 @@ impl TrackOptions {
     /// [`fb_levels`](Self::fb_levels).
     pub const fn with_fb_levels(mut self, levels: usize) -> Self {
         self.fb_levels = Some(levels);
+        self
+    }
+
+    /// Selects the arithmetic of the 8-bit tracker.
+    pub const fn with_kernel(mut self, kernel: TrackKernel) -> Self {
+        self.kernel = kernel;
         self
     }
 }
@@ -216,7 +258,7 @@ pub fn calc_optical_flow_ex(
         predicted,
         params,
         None,
-        GrayImage::select(params.window_size),
+        GrayImage::select(TrackKernel::Auto, params.window_size),
         &mut scratch,
         &mut out,
     );
@@ -230,6 +272,8 @@ pub fn calc_optical_flow_ex(
 struct Scratch {
     /// Patches of the f32 kernels: intensities and both gradients.
     float_patch: [Vec<f32>; 3],
+    /// Patches of the fixed-point kernels, rows padded to whole lane chunks.
+    fixed_patch: [Vec<i16>; 3],
     displacements: Vec<(f32, f32)>,
 }
 
@@ -238,6 +282,9 @@ impl Scratch {
         let size = capacity.window_size;
         for buffer in &mut self.float_patch {
             reserve_total(buffer, size * size);
+        }
+        for buffer in &mut self.fixed_patch {
+            reserve_total(buffer, size * fixed::stride(size));
         }
         reserve_total(&mut self.displacements, capacity.points);
     }
@@ -482,6 +529,128 @@ unsafe fn track_level_avx2<I: TrackImage, W: Windows<I>>(
     track_level_impl(level, prev_points, displacements, windows, out)
 }
 
+/// A fixed-point kernel of the 8-bit tracker, see the `fixed` module. All of
+/// them return the same results. aarch64 has no NEON kernel yet and runs the
+/// scalar one when `TrackKernel::FixedPoint` asks for fixed point.
+#[derive(Clone, Copy, Debug)]
+enum FixedKernel {
+    /// The kernel of targets without SIMD kernels; the tests run it on all.
+    #[cfg_attr(
+        any(
+            all(
+                any(target_arch = "x86", target_arch = "x86_64"),
+                target_feature = "sse2"
+            ),
+            all(target_arch = "wasm32", target_feature = "simd128")
+        ),
+        allow(dead_code)
+    )]
+    Scalar,
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse2"
+    ))]
+    Sse2,
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    Avx2(fixed::Avx2),
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    Simd128,
+}
+
+impl FixedKernel {
+    /// The SIMD kernel every CPU of the compilation target has.
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse2"
+    ))]
+    const BASELINE: Self = FixedKernel::Sse2;
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    const BASELINE: Self = FixedKernel::Simd128;
+    #[cfg(not(any(
+        all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            target_feature = "sse2"
+        ),
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )))]
+    const BASELINE: Self = FixedKernel::Scalar;
+
+    /// The fastest fixed-point kernel of this CPU; `Scalar` without SIMD.
+    fn detect() -> Self {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(avx2) = fixed::Avx2::detect() {
+            return FixedKernel::Avx2(avx2);
+        }
+        Self::BASELINE
+    }
+
+    /// Refines every point's displacement at one level.
+    fn track_level(
+        self,
+        level: &Level<GrayImage>,
+        prev_points: &[(f32, f32)],
+        scratch: &mut Scratch,
+        out: &mut [TrackResult],
+    ) {
+        let size = level.window_size;
+        let stride = fixed::stride(size);
+        let Scratch {
+            fixed_patch: [pixels, grad_x, grad_y],
+            displacements,
+            ..
+        } = scratch;
+        for patch in [&mut *pixels, &mut *grad_x, &mut *grad_y] {
+            patch.resize(size * stride, 0);
+        }
+        let patch = fixed::Patch {
+            size,
+            stride,
+            pixels,
+            grad_x,
+            grad_y,
+        };
+        fn run<K: fixed::Ops>(
+            level: &Level<GrayImage>,
+            prev_points: &[(f32, f32)],
+            displacements: &mut [(f32, f32)],
+            patch: fixed::Patch<'_>,
+            ops: K,
+            out: &mut [TrackResult],
+        ) {
+            let windows = FixedWindows { patch, ops };
+            track_level_impl(level, prev_points, displacements, windows, out)
+        }
+        match self {
+            FixedKernel::Scalar => {
+                run(level, prev_points, displacements, patch, fixed::Scalar, out)
+            }
+            #[cfg(all(
+                any(target_arch = "x86", target_arch = "x86_64"),
+                target_feature = "sse2"
+            ))]
+            FixedKernel::Sse2 => run(level, prev_points, displacements, patch, fixed::Sse2, out),
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            FixedKernel::Avx2(avx2) => run(level, prev_points, displacements, patch, avx2, out),
+            #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+            FixedKernel::Simd128 => run(
+                level,
+                prev_points,
+                displacements,
+                patch,
+                fixed::Simd128,
+                out,
+            ),
+        }
+    }
+}
+
+/// The kernel of one pass of the 8-bit tracker.
+#[derive(Clone, Copy, Debug)]
+enum ByteKernel {
+    Reference(Kernel),
+    Fixed(FixedKernel),
+}
+
 /// Per-window arithmetic of the Lucas-Kanade loop: the patch of the previous
 /// frame, the residual sums against the next frame and the final error.
 trait Windows<I: TrackImage> {
@@ -518,6 +687,63 @@ impl<I: TrackImage> Windows<I> for FloatWindows<'_> {
     #[inline(always)]
     fn error(&self, lv: &Level<I>, win: &Window) -> f32 {
         window_error(lv, win, self.prev)
+    }
+}
+
+/// The fixed-point windows of the 8-bit tracker, with kernels `ops`.
+struct FixedWindows<'a, K> {
+    patch: fixed::Patch<'a>,
+    ops: K,
+}
+
+impl<K: fixed::Ops> Windows<GrayImage> for FixedWindows<'_, K> {
+    #[inline(always)]
+    fn build(&mut self, lv: &Level<GrayImage>, win: &Window) -> (f32, f32, f32) {
+        let source = fixed::Source {
+            pixels: fixed::Plane {
+                data: lv.prev,
+                width: lv.width,
+            },
+            grad_x: fixed::Plane {
+                data: lv.grad_x,
+                width: lv.width,
+            },
+            grad_y: fixed::Plane {
+                data: lv.grad_y,
+                width: lv.width,
+            },
+        };
+        let weights = fixed::Weights::of(win);
+        let [xx, xy, yy] = self
+            .ops
+            .build(source, win.x0, win.y0, weights, &mut self.patch);
+        let scale = |sum: i64| sum as f32 * fixed::SPATIAL_SCALE;
+        (scale(xx), scale(xy), scale(yy))
+    }
+
+    #[inline(always)]
+    fn step(&self, lv: &Level<GrayImage>, win: &Window) -> (f32, f32) {
+        let next = fixed::Plane {
+            data: lv.curr,
+            width: lv.width,
+        };
+        let weights = fixed::Weights::of(win);
+        let [bx, by] = self.ops.step(next, win.x0, win.y0, weights, &self.patch);
+        (
+            bx as f32 * fixed::RESIDUAL_SCALE,
+            by as f32 * fixed::RESIDUAL_SCALE,
+        )
+    }
+
+    #[inline(always)]
+    fn error(&self, lv: &Level<GrayImage>, win: &Window) -> f32 {
+        let next = fixed::Plane {
+            data: lv.curr,
+            width: lv.width,
+        };
+        let weights = fixed::Weights::of(win);
+        let sum = self.ops.error(next, win.x0, win.y0, weights, &self.patch);
+        sum as f32 * fixed::ERROR_SCALE / (lv.window_size * lv.window_size) as f32
     }
 }
 
@@ -995,7 +1221,7 @@ pub fn calc_optical_flow_fb(
 ) -> Vec<TrackResult> {
     let mut scratch = Scratch::default();
     let mut forward = Vec::new();
-    let kernel = GrayImage::select(params.window_size);
+    let kernel = GrayImage::select(TrackKernel::Auto, params.window_size);
     track_into(
         prev_pyramid,
         &mut Gradients::default(),
@@ -1102,8 +1328,8 @@ trait TrackImage: Sized {
     /// summed over `n_pixels` window samples of slopes per pixel.
     fn spatial_inverse(gxx: f32, gxy: f32, gyy: f32, n_pixels: usize, threshold: f32) -> Spatial;
 
-    /// The kernel for windows of `window_size` on this CPU.
-    fn select(window_size: usize) -> Self::Kernel;
+    /// The kernel for `choice` and windows of `window_size` on this CPU.
+    fn select(choice: TrackKernel, window_size: usize) -> Self::Kernel;
 
     /// Refines every point's displacement at one level with `kernel`.
     fn track_level(
@@ -1118,24 +1344,38 @@ trait TrackImage: Sized {
 impl TrackImage for GrayImage {
     type Pixel = u8;
     type Gradient = i16;
-    type Kernel = Kernel;
+    type Kernel = ByteKernel;
 
     fn dimensions(&self) -> (u32, u32) {
         ImageBuffer::dimensions(self)
     }
 
-    fn select(_: usize) -> Kernel {
-        Kernel::detect()
+    fn select(choice: TrackKernel, window_size: usize) -> ByteKernel {
+        let fixed = FixedKernel::detect();
+        let fixed_point = window_size <= fixed::MAX_WINDOW
+            && match choice {
+                TrackKernel::Auto => !matches!(fixed, FixedKernel::Scalar),
+                TrackKernel::FixedPoint => true,
+                TrackKernel::Reference => false,
+            };
+        if fixed_point {
+            ByteKernel::Fixed(fixed)
+        } else {
+            ByteKernel::Reference(Kernel::detect())
+        }
     }
 
     fn track_level(
-        kernel: Kernel,
+        kernel: ByteKernel,
         level: &Level<Self>,
         prev_points: &[(f32, f32)],
         scratch: &mut Scratch,
         out: &mut [TrackResult],
     ) {
-        kernel.track_level(level, prev_points, scratch, out)
+        match kernel {
+            ByteKernel::Reference(kernel) => kernel.track_level(level, prev_points, scratch, out),
+            ByteKernel::Fixed(kernel) => kernel.track_level(level, prev_points, scratch, out),
+        }
     }
 
     fn pixels(&self) -> &[u8] {
@@ -1183,7 +1423,7 @@ impl TrackImage for FloatPyramidLevel {
         ImageBuffer::dimensions(self)
     }
 
-    fn select(_: usize) -> Kernel {
+    fn select(_: TrackKernel, _: usize) -> Kernel {
         Kernel::detect()
     }
 
@@ -1379,7 +1619,7 @@ impl<I: TrackImage> Tracker<I> {
             predicted,
             params,
             options.start_level,
-            I::select(params.window_size),
+            I::select(options.kernel, params.window_size),
             &mut self.scratch,
             &mut self.results,
         );
@@ -1398,7 +1638,7 @@ impl<I: TrackImage> Tracker<I> {
             assert!(levels >= 1, "fb_levels must be at least 1");
             levels - 1
         });
-        let kernel = I::select(params.window_size);
+        let kernel = I::select(options.kernel, params.window_size);
         track_into(
             &self.prev_pyramid,
             &mut self.prev_gradients,
@@ -1570,7 +1810,7 @@ impl TrackerContext {
     }
 
     /// [`track`](Self::track) with [`TrackOptions`]: the level the pass starts
-    /// at.
+    /// at and the kernel arithmetic.
     pub fn track_with(
         &mut self,
         prev_points: &[(f32, f32)],
@@ -1601,7 +1841,8 @@ impl TrackerContext {
     }
 
     /// [`track_fb`](Self::track_fb) with [`TrackOptions`]: the level the
-    /// forward pass starts at and the levels of the backward pass.
+    /// forward pass starts at, the levels of the backward pass and the kernel
+    /// arithmetic.
     ///
     /// ```
     /// # use image::GrayImage;
@@ -1751,8 +1992,8 @@ impl FloatTrackerContext {
         self.track_with(prev_points, predicted, params, TrackOptions::new())
     }
 
-    /// [`track`](Self::track) with [`TrackOptions`]: the level the pass starts
-    /// at.
+    /// [`track`](Self::track) with [`TrackOptions`]. The f32 tracker always
+    /// uses its f32 kernels, so only `start_level` applies.
     pub fn track_with(
         &mut self,
         prev_points: &[(f32, f32)],
@@ -1805,6 +2046,7 @@ impl FloatTrackerContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pyramid::build_pyramid;
     use image::Luma;
 
     #[test]
@@ -1884,6 +2126,126 @@ mod tests {
                 bx.abs() < 1e-2 && by.abs() < 1e-2,
                 "size {size}: ({bx}, {by})"
             );
+        }
+    }
+
+    /// Every fixed-point kernel this CPU runs.
+    fn fixed_kernels() -> Vec<FixedKernel> {
+        #[allow(unused_mut)]
+        let mut kernels = vec![FixedKernel::Scalar, FixedKernel::BASELINE];
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        if let Some(avx2) = fixed::Avx2::detect() {
+            kernels.push(FixedKernel::Avx2(avx2));
+        }
+        kernels
+    }
+
+    /// Smoothed hash noise, `w` x `h`, shifted by `(sx, sy)` pixels.
+    fn texture(w: u32, h: u32, (sx, sy): (f32, f32)) -> GrayImage {
+        let noise = |x: i32, y: i32| {
+            let mut s = (y.rem_euclid(1024) as u32 * 1024 + x.rem_euclid(1024) as u32)
+                .wrapping_mul(2654435761);
+            s ^= s >> 15;
+            s = s.wrapping_mul(0x85ebca6b);
+            (s >> 24) as f32
+        };
+        let smooth = |x: f32, y: f32| {
+            let (x0, y0) = (x.floor(), y.floor());
+            let (fx, fy) = (x - x0, y - y0);
+            let mut total = 0.0;
+            for dy in -2..=3 {
+                for dx in -2..=3 {
+                    let wx = if dx == -2 {
+                        1.0 - fx
+                    } else if dx == 3 {
+                        fx
+                    } else {
+                        1.0
+                    };
+                    let wy = if dy == -2 {
+                        1.0 - fy
+                    } else if dy == 3 {
+                        fy
+                    } else {
+                        1.0
+                    };
+                    total += wx * wy * noise(x0 as i32 + dx, y0 as i32 + dy);
+                }
+            }
+            total / 25.0
+        };
+        GrayImage::from_fn(w, h, |x, y| {
+            Luma([smooth(x as f32 - sx, y as f32 - sy) as u8])
+        })
+    }
+
+    #[test]
+    fn fixed_point_kernels_track_identically() {
+        for (w, h, shift) in [(97u32, 71u32, (1.7f32, -0.6f32)), (160, 120, (4.25, 3.5))] {
+            let prev = build_pyramid(&texture(w, h, (0.0, 0.0)), 3);
+            let next = build_pyramid(&texture(w, h, shift), 3);
+            // A lattice reaching into the borders, where windows fall back
+            // to the scalar kernel and leave the frame.
+            let points: Vec<(f32, f32)> = (0..90)
+                .map(|i| {
+                    (
+                        1.5 + (i % 10) as f32 * w as f32 / 9.6,
+                        2.0 + (i / 10) as f32 * h as f32 / 8.7,
+                    )
+                })
+                .collect();
+            let predicted: Vec<(f32, f32)> = points
+                .iter()
+                .map(|&(x, y)| (x + shift.0, y + shift.1))
+                .collect();
+            for window_size in [1, 7, 13, 21, 31] {
+                let params = TrackParams {
+                    window_size,
+                    max_iterations: 20,
+                    min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
+                };
+                for guess in [None, Some(predicted.as_slice())] {
+                    let run = |kernel| {
+                        let mut out = Vec::new();
+                        track_into(
+                            &prev,
+                            &mut Gradients::default(),
+                            &next,
+                            &points,
+                            guess,
+                            params,
+                            None,
+                            ByteKernel::Fixed(kernel),
+                            &mut Scratch::default(),
+                            &mut out,
+                        );
+                        out.iter()
+                            .map(|r| {
+                                (
+                                    r.pos.0.to_bits(),
+                                    r.pos.1.to_bits(),
+                                    r.status,
+                                    r.error.to_bits(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let kernels = fixed_kernels();
+                    let scalar = run(kernels[0]);
+                    let tracked = scalar
+                        .iter()
+                        .filter(|r| r.2 == TrackStatus::Tracked)
+                        .count();
+                    assert!(window_size == 1 || tracked > 20, "{tracked} tracked");
+                    for &kernel in &kernels[1..] {
+                        assert_eq!(
+                            run(kernel),
+                            scalar,
+                            "{kernel:?}, {w}x{h}, window {window_size}"
+                        );
+                    }
+                }
+            }
         }
     }
 

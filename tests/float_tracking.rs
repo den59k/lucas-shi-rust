@@ -4,7 +4,7 @@
 use image::GrayImage;
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, FloatImageView, FloatTrackerContext,
-    TrackOptions, TrackParams, TrackResult, TrackStatus, TrackerContext,
+    TrackKernel, TrackOptions, TrackParams, TrackResult, TrackStatus, TrackerContext,
 };
 
 const WIN: usize = 21;
@@ -594,6 +594,11 @@ fn cached_gradients_and_options_match_a_fresh_context() {
                 bits(fresh.track_with(&points, None, params, options))
             );
         }
+        // The kernel option does not apply to f32 frames.
+        let reference = TrackOptions::new().with_kernel(TrackKernel::Reference);
+        let fixed = TrackOptions::new().with_kernel(TrackKernel::FixedPoint);
+        let a = ctx.track_with(&points, None, params, reference).to_vec();
+        assert_eq!(bits(&a), bits(ctx.track_with(&points, None, params, fixed)));
     }
 }
 

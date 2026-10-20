@@ -3,9 +3,9 @@
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
-    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, Grid, TrackOptions, TrackParams,
-    TrackResult, TrackStatus, TrackerCapacity, TrackerContext, build_pyramid, calc_optical_flow_ex,
-    calc_optical_flow_fb, good_features_to_track_grid,
+    Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, Grid, TrackKernel, TrackOptions,
+    TrackParams, TrackResult, TrackStatus, TrackerCapacity, TrackerContext, build_pyramid,
+    calc_optical_flow_ex, calc_optical_flow_fb, good_features_to_track_grid,
 };
 
 const WIN: usize = 21;
@@ -542,7 +542,10 @@ fn cached_gradients_give_the_results_of_recomputed_ones() {
         TrackOptions::new(),
         TrackOptions::new().with_fb_levels(1),
         TrackOptions::new().with_start_level(1),
-        TrackOptions::new().with_fb_levels(2),
+        TrackOptions::new()
+            .with_fb_levels(2)
+            .with_kernel(TrackKernel::Reference),
+        TrackOptions::new().with_kernel(TrackKernel::FixedPoint),
     ];
     let mut ctx = TrackerContext::new();
     ctx.advance(&frames[0], 4);
@@ -586,6 +589,54 @@ fn cached_gradients_give_the_results_of_recomputed_ones() {
             "step {step}"
         );
     }
+}
+
+#[test]
+fn free_functions_use_the_automatic_kernel() {
+    let (frames, points) = sequence();
+    let mut ctx = TrackerContext::new();
+    ctx.prepare(&frames[0], &frames[1], 4);
+    let free = calc_optical_flow_ex(
+        ctx.prev_pyramid(),
+        ctx.next_pyramid(),
+        &points,
+        None,
+        PARAMS,
+    );
+    let auto = ctx.track_with(
+        &points,
+        None,
+        PARAMS,
+        TrackOptions::new().with_kernel(TrackKernel::Auto),
+    );
+    assert_eq!(bits(auto), bits(&free));
+    // Auto is one of the two kernels.
+    let fixed = bits(ctx.track_with(
+        &points,
+        None,
+        PARAMS,
+        TrackOptions::new().with_kernel(TrackKernel::FixedPoint),
+    ));
+    let reference = bits(ctx.track_with(
+        &points,
+        None,
+        PARAMS,
+        TrackOptions::new().with_kernel(TrackKernel::Reference),
+    ));
+    let free = bits(&free);
+    assert!(free == fixed || free == reference);
+    // Windows above the fixed-point limit always use the reference kernel.
+    let wide = TrackParams {
+        window_size: 129,
+        ..PARAMS
+    };
+    let points = [(160.0, 120.0)];
+    let results: Vec<_> = [TrackKernel::FixedPoint, TrackKernel::Reference]
+        .map(|kernel| {
+            bits(ctx.track_with(&points, None, wide, TrackOptions::new().with_kernel(kernel)))
+        })
+        .into();
+    assert_eq!(results[0], results[1]);
 }
 
 #[test]

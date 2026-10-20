@@ -11,8 +11,8 @@ use std::cell::Cell;
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
     DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, DetectorCapacity, DetectorContext,
-    FloatDetectorContext, FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackOptions,
-    TrackParams, TrackerCapacity, TrackerContext,
+    FloatDetectorContext, FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackKernel,
+    TrackOptions, TrackParams, TrackerCapacity, TrackerContext,
 };
 
 struct CountingAllocator;
@@ -391,11 +391,13 @@ const ADVANCE_PARAMS: TrackParams = TrackParams {
 
 /// Option sets every per-frame call cycles through: backward passes over
 /// fewer levels (so that frames become previous frames with only some
-/// gradient levels computed) and a lower start level.
-const OPTION_SETS: [TrackOptions; 3] = [
+/// gradient levels computed), a lower start level and both kernels.
+const OPTION_SETS: [TrackOptions; 5] = [
     TrackOptions::new(),
     TrackOptions::new().with_fb_levels(1),
     TrackOptions::new().with_start_level(1).with_fb_levels(2),
+    TrackOptions::new().with_kernel(TrackKernel::Reference),
+    TrackOptions::new().with_kernel(TrackKernel::FixedPoint),
 ];
 
 /// One frame step of a real-time front-end: `advance`, `track_fb_with` and a
@@ -414,11 +416,11 @@ fn frame_step(
 }
 
 #[test]
-fn steady_state_options_are_allocation_free() {
+fn steady_state_options_and_kernels_are_allocation_free() {
     let frames = [25, 26, 27].map(|seed| textured(640, 480, seed));
     let points = lattice(200);
     let mut ctx = TrackerContext::new();
-    // Warm-up: every option set once.
+    // Warm-up: every option set and kernel once.
     for (frame, options) in frames.iter().cycle().zip(OPTION_SETS) {
         frame_step(&mut ctx, frame, &points, options);
     }
@@ -479,7 +481,7 @@ fn reserved_advance_does_not_allocate_from_the_first_frame() {
     };
     let mut ctx = TrackerContext::with_capacity(capacity);
     let (allocs, tracked) = allocations(|| {
-        // Every option set from the first frame on.
+        // Every option set and both kernels from the first frame on.
         let steps = frames.iter().cycle().zip(OPTION_SETS.iter().cycle());
         steps
             .take(5)

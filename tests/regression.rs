@@ -5,12 +5,16 @@
 //! Outputs must be identical on every target (native, AVX2, WASM). After an
 //! intended change in results, regenerate the file with
 //! `REGRESSION_BLESS=1 cargo test --test regression` and review the diff.
+//!
+//! The 8-bit tracking cases name their kernel explicitly, because
+//! `TrackKernel::Auto` is the fixed-point kernel on SIMD targets and the f32
+//! reference elsewhere.
 
 use image::{GrayImage, Luma};
 use optical_flow_lk::{
     Corner, DEFAULT_FB_THRESHOLD, DEFAULT_MIN_EIGEN_THRESHOLD, FloatDetectorContext,
-    FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackParams, TrackResult,
-    TrackStatus, build_pyramid, calc_optical_flow_ex, calc_optical_flow_fb, good_features_to_track,
+    FloatImageView, FloatTrackerContext, Grid, ScoreThreshold, TrackKernel, TrackOptions,
+    TrackParams, TrackResult, TrackStatus, TrackerContext, good_features_to_track,
     good_features_to_track_grid,
 };
 
@@ -238,42 +242,41 @@ fn tracking_lines() -> Vec<String> {
             .map(|corner| corner.position()),
     );
 
+    // The f32 reference kernel keeps the lines of 0.5 (`track...`); the
+    // fixed-point kernel, identical on every target, has its own
+    // (`fixed_track...`). `Auto` picks one or the other by target.
     let mut lines = Vec::new();
-    for (sx, sy) in [(0.4f32, -0.3f32), (3.0, 2.0), (12.5, -7.25)] {
-        let next = shift(&prev, sx, sy);
-        let predicted: Vec<(f32, f32)> = points.iter().map(|&(x, y)| (x + sx, y + sy)).collect();
-        for (levels, window, iterations) in [(1usize, 7usize, 10usize), (3, 15, 15), (4, 21, 30)] {
-            let prev_pyramid = build_pyramid(&prev, levels);
-            let next_pyramid = build_pyramid(&next, levels);
-            let id =
-                |kind: &str| format!("{kind} s=({sx},{sy}) l={levels} w={window} i={iterations}");
-            for (guess, label) in [(None, "track"), (Some(predicted.as_slice()), "track_guess")] {
-                let results = calc_optical_flow_ex(
-                    &prev_pyramid,
-                    &next_pyramid,
-                    &points,
-                    guess,
-                    TrackParams {
-                        window_size: window,
-                        max_iterations: iterations,
-                        min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
-                    },
-                );
-                lines.push(tracks_line(id(label), &results));
-            }
-            let results = calc_optical_flow_fb(
-                &prev_pyramid,
-                &next_pyramid,
-                &points,
-                None,
-                TrackParams {
+    for (kernel, prefix) in [
+        (TrackKernel::Reference, ""),
+        (TrackKernel::FixedPoint, "fixed_"),
+    ] {
+        let options = TrackOptions::new().with_kernel(kernel);
+        let mut ctx = TrackerContext::new();
+        for (sx, sy) in [(0.4f32, -0.3f32), (3.0, 2.0), (12.5, -7.25)] {
+            let next = shift(&prev, sx, sy);
+            let predicted: Vec<(f32, f32)> =
+                points.iter().map(|&(x, y)| (x + sx, y + sy)).collect();
+            for (levels, window, iterations) in
+                [(1usize, 7usize, 10usize), (3, 15, 15), (4, 21, 30)]
+            {
+                ctx.prepare(&prev, &next, levels);
+                let params = TrackParams {
                     window_size: window,
                     max_iterations: iterations,
                     min_eigen_threshold: DEFAULT_MIN_EIGEN_THRESHOLD,
-                },
-                DEFAULT_FB_THRESHOLD,
-            );
-            lines.push(tracks_line(id("track_fb"), &results));
+                };
+                let id = |kind: &str| {
+                    format!("{prefix}{kind} s=({sx},{sy}) l={levels} w={window} i={iterations}")
+                };
+                for (guess, label) in [(None, "track"), (Some(predicted.as_slice()), "track_guess")]
+                {
+                    let results = ctx.track_with(&points, guess, params, options);
+                    lines.push(tracks_line(id(label), results));
+                }
+                let results =
+                    ctx.track_fb_with(&points, None, params, DEFAULT_FB_THRESHOLD, options);
+                lines.push(tracks_line(id("track_fb"), results));
+            }
         }
     }
     lines
@@ -411,6 +414,8 @@ fn check(section: &str, actual: Vec<String>) {
 fn kind_section(kind: &str) -> &'static str {
     if kind.starts_with("float") {
         "float"
+    } else if kind.starts_with("fixed") {
+        "fixed"
     } else if kind.starts_with("track") {
         "tracking"
     } else {
@@ -421,12 +426,19 @@ fn kind_section(kind: &str) -> &'static str {
 #[test]
 fn outputs_match_fixtures() {
     let detection = detection_lines();
-    let tracking = tracking_lines();
+    let (fixed, tracking): (Vec<String>, Vec<String>) = tracking_lines()
+        .into_iter()
+        .partition(|line| kind_section(line) == "fixed");
     let float = float_lines();
     if std::env::var_os("REGRESSION_BLESS").is_some() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/regression.txt");
         let mut text = String::new();
-        for line in detection.iter().chain(&tracking).chain(&float) {
+        for line in detection
+            .iter()
+            .chain(&tracking)
+            .chain(&float)
+            .chain(&fixed)
+        {
             text.push_str(line);
             text.push('\n');
         }
@@ -436,4 +448,5 @@ fn outputs_match_fixtures() {
     check("detection", detection);
     check("tracking", tracking);
     check("float", float);
+    check("fixed", fixed);
 }
